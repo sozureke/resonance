@@ -4,8 +4,11 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 
 interface Props {
-  focused: boolean
+  /** True when the user has typed something — sphere calms; focus/blur alone does nothing */
+  hasQuery: boolean
   intensity: number
+  /** Increment on each search submit — triggers resonance pulse on the sphere */
+  searchPulse: number
 }
 
 /** Tight falloff — reads as a small spark, not a fuzzy bokeh blob */
@@ -41,6 +44,50 @@ function pixelRatioForWidth(cssWidth: number): number {
 
 const RADIUS = 1.75
 const COUNT = 48_000
+/** Seconds — silence → impulse → ring → settle + camera dolly */
+const INTRO_DURATION = 2.45
+
+function introFromElapsed(elapsed: number) {
+  if (elapsed >= INTRO_DURATION) {
+    return {
+      uIntroScale: 1,
+      uIntroLift: 1,
+      uStrikeImpulse: 0,
+      uRingPhase: 0,
+      uRingAmp: 0,
+      camZ: 5.1,
+      camY: 0,
+    }
+  }
+  const scaleT = THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(elapsed / 0.7, 0, 1), 0, 1)
+  const uIntroScale = THREE.MathUtils.lerp(0.79, 1, 1 - Math.pow(1 - scaleT, 2.35))
+  const liftT = THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(elapsed / 2.0, 0, 1), 0, 1)
+  const uIntroLift = 1 - Math.pow(1 - liftT, 1.2)
+  const tImp = elapsed - 0.085
+  const uStrikeImpulse =
+    Math.exp(-(tImp * tImp) / (2 * 0.034 * 0.034)) * THREE.MathUtils.smoothstep(elapsed, 0.03, 0.32)
+  const ringElapsed = Math.max(0, elapsed - 0.12)
+  const uRingPhase = ringElapsed * 2.08
+  const uRingAmp =
+    Math.exp(-ringElapsed * 0.74) * 1.22 * (1 - THREE.MathUtils.smoothstep(elapsed, 1.35, 2.15))
+  const camEase = THREE.MathUtils.smoothstep(THREE.MathUtils.clamp((elapsed - 0.22) / 1.38, 0, 1), 0, 1)
+  const camEaseOut = 1 - Math.pow(1 - camEase, 2.05)
+  const camZ = THREE.MathUtils.lerp(6.52, 5.1, camEaseOut)
+  const camY = THREE.MathUtils.lerp(0.34, 0, camEaseOut * 0.9)
+  return { uIntroScale, uIntroLift, uStrikeImpulse, uRingPhase, uRingAmp, camZ, camY }
+}
+
+function submitPulseFromDt(dt: number) {
+  if (dt < 0 || dt > 1.15) return { imp: 0, phase: 0, amp: 0 }
+  const tImp = dt - 0.055
+  const imp =
+    Math.exp(-(tImp * tImp) / (2 * 0.026 * 0.026)) * THREE.MathUtils.smoothstep(dt, 0.02, 0.36)
+  const ringElapsed = Math.max(0, dt - 0.09)
+  const phase = ringElapsed * 2.42
+  const amp =
+    Math.exp(-ringElapsed * 0.95) * 1.08 * (1 - THREE.MathUtils.smoothstep(dt, 0.55, 1.05))
+  return { imp, phase, amp }
+}
 
 const NOISE_GLSL = /* glsl */ `
 vec4 permute(vec4 x) { return mod(((x * 34.0) + 1.0) * x, 289.0); }
@@ -105,6 +152,14 @@ uniform float uGain;
 uniform float uCraterStrength;
 uniform vec3 uCraterDir;
 uniform float uPointScale;
+uniform float uIntroScale;
+uniform float uIntroLift;
+uniform float uStrikeImpulse;
+uniform float uRingPhase;
+uniform float uRingAmp;
+uniform float uSubmitImpulse;
+uniform float uSubmitRingPhase;
+uniform float uSubmitRingAmp;
 
 in vec3 position;
 in float aKind;
@@ -246,6 +301,8 @@ void main() {
     tw = 0.9 + 0.22 * pow(0.5 + 0.5 * sin(f1x * 2.4 + uTime * 0.5 + f1y), 0.45);
   }
 
+  localPos *= uIntroScale;
+
   float drift = uTime * 0.01 + 0.22 * sin(uTime * 0.14 + dir.x * 1.8 + dir.y * 1.2 + dir.z * 1.5 + aPhase);
   if (kind > 0.5 && kind < 1.5) {
     drift = uTime * 0.011 + 0.12 * snoise(dir * 0.48 + vec3(uTime * 0.042, -uTime * 0.03, uTime * 0.025))
@@ -268,6 +325,19 @@ void main() {
   brightness *= zoneBright;
 
   brightness = brightness * uGain * tw;
+
+  float introBase = mix(0.08, 1.0, smoothstep(0.0, 1.0, uIntroLift));
+  float angFromPole = acos(clamp(dir.z, -1.0, 1.0));
+  float ringDelta = angFromPole - uRingPhase;
+  float ringGlow = exp(-(ringDelta * ringDelta) * 40.0) * uRingAmp;
+  float submitRingDelta = angFromPole - uSubmitRingPhase;
+  float submitRingGlow = exp(-(submitRingDelta * submitRingDelta) * 38.0) * uSubmitRingAmp;
+  brightness = brightness * introBase + uStrikeImpulse * 0.58 + ringGlow * 1.05;
+  brightness += uSubmitImpulse * 0.52 + submitRingGlow * 0.92;
+  brightness = clamp(brightness, 0.0, 3.4);
+  float beat = 0.945 + 0.09 * (0.5 + 0.5 * sin(uTime * 0.355) * sin(uTime * 0.431));
+  brightness *= beat;
+
   vColor = palette(colorT) * brightness * aSz;
   vAlpha = min(0.95, 0.55 + brightness * 0.35) * tw;
   vTw = tw;
@@ -301,14 +371,14 @@ void main() {
 }
 `
 
-export default function ParticleSphere({ focused, intensity }: Props) {
+export default function ParticleSphere({ hasQuery, intensity, searchPulse }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
-  const stateRef = useRef({ focused, intensity })
-  const focusBlendRef = useRef(0)
+  const stateRef = useRef({ hasQuery, intensity, searchPulse })
+  const calmBlendRef = useRef(0)
 
   useEffect(() => {
-    stateRef.current = { focused, intensity }
-  }, [focused, intensity])
+    stateRef.current = { hasQuery, intensity, searchPulse }
+  }, [hasQuery, intensity, searchPulse])
 
   useEffect(() => {
     const mount = mountRef.current
@@ -320,7 +390,8 @@ export default function ParticleSphere({ focused, intensity }: Props) {
     scene.background = new THREE.Color(0x000000)
 
     const camera = new THREE.PerspectiveCamera(55, Math.max(1, mount.clientWidth) / Math.max(1, mount.clientHeight), 0.1, 100)
-    camera.position.z = 5.1
+    camera.position.z = 6.52
+    camera.position.y = 0.34
 
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -422,6 +493,14 @@ export default function ParticleSphere({ focused, intensity }: Props) {
         uCraterStrength: { value: 0 },
         uCraterDir: { value: new THREE.Vector3(0, 0, 0) },
         uPointScale: { value: 1.15 },
+        uIntroScale: { value: 0.79 },
+        uIntroLift: { value: 0 },
+        uStrikeImpulse: { value: 0 },
+        uRingPhase: { value: 0 },
+        uRingAmp: { value: 0 },
+        uSubmitImpulse: { value: 0 },
+        uSubmitRingPhase: { value: 0 },
+        uSubmitRingAmp: { value: 0 },
         uMap: { value: tex },
       },
       vertexShader,
@@ -451,6 +530,54 @@ export default function ParticleSphere({ focused, intensity }: Props) {
     const rotCur = { x: 0, y: 0 }
     const tiltEuler = new THREE.Euler(0, 0, 0, 'YXZ')
     const tiltM4 = new THREE.Matrix4()
+
+    const submitPulseRef = { version: 0, t0: -1e6 }
+    const gyroRaw = { gx: 0, gy: 0, ok: false }
+    const gyroSm = { x: 0, y: 0 }
+    let gyroMix = 0
+    let orientAttached = false
+
+    const onDeviceOrient = (e: DeviceOrientationEvent) => {
+      if (e.gamma == null || e.beta == null) return
+      const g = Math.max(-44, Math.min(44, e.gamma))
+      const b = Math.max(-40, Math.min(40, e.beta - 40))
+      gyroRaw.gx = THREE.MathUtils.degToRad(g) * 0.4
+      gyroRaw.gy = THREE.MathUtils.degToRad(b) * -0.34
+      gyroRaw.ok = true
+    }
+
+    const attachOrientation = () => {
+      if (orientAttached || typeof window === 'undefined') return
+      orientAttached = true
+      window.addEventListener('deviceorientation', onDeviceOrient, { passive: true })
+    }
+
+    const tryIosOrientationPermission = () => {
+      const DO = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> }
+      if (typeof DO.requestPermission === 'function') {
+        DO.requestPermission()
+          .then((s) => {
+            if (s === 'granted') attachOrientation()
+          })
+          .catch(() => {})
+      } else {
+        attachOrientation()
+      }
+    }
+
+    const coarsePointer = () =>
+      typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+    if (coarsePointer()) {
+      const onceOrient = () => {
+        tryIosOrientationPermission()
+        window.removeEventListener('touchend', onceOrient)
+        window.removeEventListener('click', onceOrient)
+      }
+      window.addEventListener('touchend', onceOrient, { passive: true })
+      window.addEventListener('click', onceOrient, { passive: true })
+    } else {
+      attachOrientation()
+    }
 
     const raycaster = new THREE.Raycaster()
     const ndc = new THREE.Vector2()
@@ -505,25 +632,60 @@ export default function ParticleSphere({ focused, intensity }: Props) {
     const clock = new THREE.Clock()
     let frameId = 0
     let warmupId = 0
+    let speedSmooth = 0.8
 
     const animate = () => {
       if (cancelled) return
       frameId = requestAnimationFrame(animate)
       if (!tabVisible) return
 
-      const { focused: isFocused, intensity: intens } = stateRef.current
-      const focusTarget = isFocused ? 1 : 0
-      focusBlendRef.current += (focusTarget - focusBlendRef.current) * 0.065
-      const f = focusBlendRef.current
+      const { hasQuery: typing, intensity: intens } = stateRef.current
+      const calmTarget = typing ? 1 : 0
+      const calmDelta = calmTarget - calmBlendRef.current
+      const calmK = calmDelta < 0 ? 0.028 : 0.045
+      calmBlendRef.current += calmDelta * calmK
+      const c = calmBlendRef.current
+      const cEase = c * c * (3.0 - 2.0 * c)
 
       const t = clock.getElapsedTime()
-      const speed = (1 - f) * (0.8 + intens * 1.2) + f * 0.25
-      const simT = t * speed
+      const intro = introFromElapsed(t)
+      mat.uniforms.uIntroScale.value = intro.uIntroScale
+      mat.uniforms.uIntroLift.value = intro.uIntroLift
+      mat.uniforms.uStrikeImpulse.value = intro.uStrikeImpulse
+      mat.uniforms.uRingPhase.value = intro.uRingPhase
+      mat.uniforms.uRingAmp.value = intro.uRingAmp
+      camera.position.z = intro.camZ
+      camera.position.y = intro.camY
+
+      const sp = stateRef.current.searchPulse
+      if (sp !== submitPulseRef.version) {
+        submitPulseRef.version = sp
+        submitPulseRef.t0 = t
+      }
+      const sub = submitPulseFromDt(t - submitPulseRef.t0)
+      mat.uniforms.uSubmitImpulse.value = sub.imp
+      mat.uniforms.uSubmitRingPhase.value = sub.phase
+      mat.uniforms.uSubmitRingAmp.value = sub.amp
+
+      const speedUnfocused = 0.8 + intens * 1.2
+      const speedCalm = 0.4
+      const speedTarget = (1 - cEase) * speedUnfocused + cEase * speedCalm
+      speedSmooth += (speedTarget - speedSmooth) * 0.05
+      const simT = t * speedSmooth
 
       const rollZ = 0.07 * Math.sin(simT * 0.19) + 0.04 * Math.sin(simT * 0.55 + 0.2)
       const MAX = (14 * Math.PI) / 180
-      rotTarget.x = mouse.ny * MAX
-      rotTarget.y = mouse.nx * MAX
+      const mobileCoarse = coarsePointer()
+      if (gyroRaw.ok && mobileCoarse) {
+        gyroMix = Math.min(1, gyroMix + 0.018)
+      } else {
+        gyroMix = Math.max(0, gyroMix - 0.024)
+      }
+      gyroSm.x += (gyroRaw.gx - gyroSm.x) * 0.072
+      gyroSm.y += (gyroRaw.gy - gyroSm.y) * 0.072
+      const gStrength = MAX * 0.72 * gyroMix
+      rotTarget.x = mouse.ny * MAX + gyroSm.y * gStrength
+      rotTarget.y = mouse.nx * MAX + gyroSm.x * gStrength
       rotCur.x += (rotTarget.x - rotCur.x) * 0.028
       rotCur.y += (rotTarget.y - rotCur.y) * 0.028
       tiltEuler.set(rotCur.x, rotCur.y, rollZ)
@@ -558,14 +720,14 @@ export default function ParticleSphere({ focused, intensity }: Props) {
       const lumaSlow = 0.86 + 0.28 * heart
       const lumaGlint = 1 + 0.12 * Math.sin(simT * 2.05) * (0.5 + 0.5 * Math.sin(simT * 0.4))
       const lumaIntens = 1 + 0.4 * Math.min(1, Math.pow(intens, 0.85))
-      const lumaFocus = 1 + 0.05 * f
+      const lumaFocus = 1 + 0.04 * cEase
       const gain = BRIGHTNESS_MASTER * lumaBreathe * lumaSlow * lumaGlint * lumaIntens * lumaFocus
 
       mat.uniforms.uTime.value = t
       mat.uniforms.uTa.value = simT * 0.12
       mat.uniforms.uTb.value = simT * 0.085
       mat.uniforms.uPh.value = ph
-      mat.uniforms.uFocus.value = f
+      mat.uniforms.uFocus.value = cEase
       mat.uniforms.uIntensity.value = THREE.MathUtils.clamp(intens, 0, 1)
       mat.uniforms.uGain.value = gain
       mat.uniforms.uCraterStrength.value = craterStrength
@@ -605,6 +767,7 @@ export default function ParticleSphere({ focused, intensity }: Props) {
       window.removeEventListener('mousemove', onMove)
       canvas.removeEventListener('mouseleave', onLeave)
       window.removeEventListener('resize', onResize)
+      window.removeEventListener('deviceorientation', onDeviceOrient)
       tex.dispose()
       geo.dispose()
       mat.dispose()

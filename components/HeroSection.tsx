@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef } from 'react'
 import dynamic from 'next/dynamic'
 import JourneyResult from './JourneyResult'
 import { Journey } from '@/types/concert'
@@ -12,10 +12,10 @@ const ParticleSphere = dynamic(() => import('./ParticleSphere'), {
 
 export default function HeroSection() {
   const [query, setQuery] = useState('')
-  const [focused, setFocused] = useState(false)
   const [loading, setLoading] = useState(false)
   const [journey, setJourney] = useState<Journey | null>(null)
   const [showResult, setShowResult] = useState(false)
+  const [searchPulse, setSearchPulse] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const intensity = loading ? 0.9 : 0
@@ -23,6 +23,7 @@ export default function HeroSection() {
   const handleSubmit = async () => {
     const q = query.trim()
     if (!q || loading) return
+    setSearchPulse((n) => n + 1)
     setLoading(true)
     setShowResult(false)
     setJourney(null)
@@ -58,7 +59,7 @@ export default function HeroSection() {
     <section className="relative w-full h-screen bg-black overflow-hidden">
       {/* Particle sphere — full section */}
       <div className="absolute inset-0">
-        <ParticleSphere focused={focused} intensity={intensity} />
+        <ParticleSphere hasQuery={query.trim().length > 0} intensity={intensity} searchPulse={searchPulse} />
       </div>
 
       {/* Bottom-third overlay */}
@@ -71,14 +72,12 @@ export default function HeroSection() {
         </h1>
 
         {/* Input row */}
-        <div className="flex w-full max-w-2xl rounded-sm overflow-hidden border border-white/60 focus-within:border-white transition-colors">
+        <div className="flex w-full max-w-2xl rounded-sm overflow-hidden border border-white/60 focus-within:border-white transition-[border-color,box-shadow] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]">
           <input
             ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
             onKeyDown={handleKeyDown}
             placeholder="Late Baroque, something melancholic, surprise me…"
             className="flex-1 bg-black text-white placeholder-white/40 text-sm md:text-base px-5 py-4 outline-none font-sans"
