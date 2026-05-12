@@ -5,10 +5,10 @@ export const dynamic = 'force-dynamic'
 
 const BACKEND_URL = (process.env.BACKEND_URL ?? 'http://127.0.0.1:4200').replace(/\/+$/, '')
 const DEFAULT_BRIDGES = [
-  'Le parcours s ouvre sur cette premiere etape, proche de votre intention.',
-  'Cette deuxieme halte elargit la perspective tout en gardant le fil emotionnel.',
-  'Ici, la trajectoire prend de l ampleur et fait basculer l ecoute.',
-  'La derniere etape referme le voyage avec une couleur complementaire.',
+  'The journey opens with a first step aligned with your intent.',
+  'This second stop broadens the perspective while keeping the same emotional thread.',
+  'Here, the trajectory expands and shifts the way you listen.',
+  'The final step closes the journey with a complementary color.',
 ]
 
 type BackendAgentResponse = {
@@ -125,7 +125,7 @@ export async function POST(req: NextRequest) {
     }
 
     const journey: Journey = {
-      journey_title: (agentPayload.message || agentPayload.arc || 'Votre parcours Resonance').slice(0, 120),
+      journey_title: (agentPayload.message || agentPayload.arc || 'Your Resonance journey').slice(0, 120),
       concerts: journeyConcerts,
     }
     return NextResponse.json(journey)

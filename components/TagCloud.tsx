@@ -34,7 +34,7 @@ export default function TagCloud({ concerts, activeTag, onTagClick }: Props) {
             key={tag}
             type="button"
             onClick={() => onTagClick?.(tag)}
-            title={active ? 'Kategoriesfilter ewechhuelen' : undefined}
+            title={active ? 'Clear category filter' : undefined}
             className={`group inline-flex items-center gap-1.5 text-sm py-1.5 pl-3 pr-2 rounded-full border transition-all duration-300 ease-out ${
               active
                 ? 'border-[#ff1a8a] text-white bg-[#ff1a8a]/15 pr-1.5'

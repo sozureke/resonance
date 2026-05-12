@@ -16,9 +16,11 @@ export default function HeroSection() {
   const [journey, setJourney] = useState<Journey | null>(null)
   const [showResult, setShowResult] = useState(false)
   const [searchPulse, setSearchPulse] = useState(0)
+  const [isInputFocused, setIsInputFocused] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const intensity = loading ? 0.9 : 0
+  const isListening = isInputFocused || query.trim().length > 0
 
   const handleSubmit = async () => {
     const q = query.trim()
@@ -58,17 +60,17 @@ export default function HeroSection() {
   return (
     <section className="relative w-full h-screen bg-black overflow-hidden">
       {/* Particle sphere — full section */}
-      <div className="absolute inset-0">
-        <ParticleSphere hasQuery={query.trim().length > 0} intensity={intensity} searchPulse={searchPulse} />
+      <div className="absolute inset-x-0 top-0 bottom-[100px]">
+        <ParticleSphere isListening={isListening} intensity={intensity} searchPulse={searchPulse} />
       </div>
 
       {/* Bottom-third overlay */}
-      <div className="absolute inset-x-0 bottom-0 flex flex-col items-center pb-16 px-6 gap-6 z-10"
+      <div className="absolute inset-x-0 bottom-[156px] md:bottom-[172px] lg:bottom-[188px] flex flex-col items-center px-6 gap-6 z-10"
         style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 100%)' }}>
 
         <h1 className="text-white text-2xl md:text-3xl font-serif italic text-center leading-snug"
           style={{ fontFamily: "'Playfair Display', serif" }}>
-          Qu&apos;est-ce que vous voulez découvrir&nbsp;?
+          What would you like to discover?
         </h1>
 
         {/* Input row */}
@@ -79,6 +81,8 @@ export default function HeroSection() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
+            onFocus={() => setIsInputFocused(true)}
+            onBlur={() => setIsInputFocused(false)}
             placeholder="Late Baroque, something melancholic, surprise me…"
             className="flex-1 bg-black text-white placeholder-white/40 text-sm md:text-base px-5 py-4 outline-none font-sans"
             style={{ fontFamily: "'DM Sans', sans-serif" }}
@@ -102,7 +106,7 @@ export default function HeroSection() {
 
         {loading && (
           <p className="text-white/50 text-xs tracking-widest uppercase animate-pulse">
-            Composing your journey…
+            Composing your journey...
           </p>
         )}
       </div>

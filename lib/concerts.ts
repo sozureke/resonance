@@ -47,11 +47,11 @@ function parseConcerts(): Concert[] {
       if (!aOk && !bOk) return 0
       if (!aOk) return 1
       if (!bOk) return -1
-      return tb - ta // plus récent d’abord (2026 → 2024)
+      return tb - ta // most recent first (2026 -> 2024)
     })
 }
 
-// Parse once at module level — cached for the lifetime of the process
+// Parse once at module level; cache for process lifetime
 let _cache: Concert[] | null = null
 
 export function getAllConcerts(): Concert[] {

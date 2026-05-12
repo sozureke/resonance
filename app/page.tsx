@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import Nav from '@/components/Nav'
 import HeroSection from '@/components/HeroSection'
 import ConcertCard from '@/components/ConcertCard'
 import TagCloud from '@/components/TagCloud'
@@ -49,7 +48,6 @@ export default function Home() {
 
   return (
     <main className="bg-black min-h-screen">
-      <Nav />
       <HeroSection />
 
       {/* Concert grid section */}
@@ -59,13 +57,13 @@ export default function Home() {
           <div className="flex items-end justify-between mb-8">
             <div>
               <p className="text-[#ff1a8a] text-xs tracking-widest uppercase mb-2">
-                Saison 2024–2026
+                Season 2024-2026
               </p>
               <h2
                 className="text-white text-2xl md:text-3xl"
                 style={{ fontFamily: "'Playfair Display', serif" }}
               >
-                Concerts à venir
+                Upcoming Concerts
               </h2>
             </div>
             {/* Scroll arrows */}
@@ -106,14 +104,14 @@ export default function Home() {
                   className="animate-concerts-strip py-8"
                 >
                   <p className="text-white/45 text-sm mb-4">
-                    Fir dëser Kategorie gëtt et elo keng Concerten.
+                    No concerts are currently available in this category.
                   </p>
                   <button
                     type="button"
                     onClick={() => setActiveTag(null)}
                     className="text-[#ff1a8a] text-xs tracking-wide underline-offset-4 hover:text-white hover:underline"
                   >
-                    All Concerten weisen
+                    Show all concerts
                   </button>
                 </div>
               ) : (
@@ -155,7 +153,7 @@ export default function Home() {
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <p className="text-white/30 text-xs"
             style={{ fontFamily: "'DM Sans', sans-serif" }}>
-            © 2026 Philharmonie Luxembourg · Resonance est un prototype IA
+            © 2026 Philharmonie Luxembourg · Resonance is an AI prototype
           </p>
         </div>
       </footer>

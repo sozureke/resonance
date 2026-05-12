@@ -9,7 +9,7 @@ interface Props {
 
 function formatDate(iso: string) {
   try {
-    return new Date(iso).toLocaleDateString('fr-LU', {
+    return new Date(iso).toLocaleDateString('en-GB', {
       weekday: 'short',
       day: 'numeric',
       month: 'long',
@@ -22,7 +22,7 @@ function formatDate(iso: string) {
 
 function formatTime(iso: string) {
   try {
-    return new Date(iso).toLocaleTimeString('fr-LU', { hour: '2-digit', minute: '2-digit' })
+    return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
   } catch {
     return ''
   }
@@ -49,7 +49,7 @@ export default function JourneyResult({ journey, onClose }: Props) {
           </h2>
           <button
             onClick={onClose}
-            aria-label="Fermer"
+            aria-label="Close"
             className="ml-4 mt-1 text-white/50 hover:text-white transition text-xl leading-none flex-shrink-0"
           >
             ✕
@@ -130,7 +130,7 @@ export default function JourneyResult({ journey, onClose }: Props) {
         {/* CTA */}
         <div className="px-6 pb-8">
           <button className="w-full max-w-sm mx-auto block py-4 border border-white text-white text-sm tracking-widest uppercase hover:bg-white hover:text-black transition-colors font-sans font-medium">
-            Réserver le parcours
+            Reserve this journey
           </button>
         </div>
       </div>

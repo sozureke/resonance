@@ -6,8 +6,8 @@ const NAV_LINKS = [
   'Concerts & Tickets',
   "Kids' Phil",
   'Luxembourg Philharmonic',
-  'Participer & soutenir',
-  'Votre visite',
+  'Participate & Support',
+  'Your Visit',
 ]
 
 export default function Nav() {
@@ -78,7 +78,7 @@ export default function Nav() {
             className="text-xs sm:text-sm text-white/75 font-medium hover:text-white transition border border-white/20 hover:border-white/35 rounded px-2 py-1 shrink-0"
             style={{ fontFamily: "'DM Sans', sans-serif" }}
           >
-            FR
+            EN
           </button>
 
           <button
@@ -86,7 +86,7 @@ export default function Nav() {
             className="min-[1360px]:hidden p-2 -mr-1 sm:-mr-2 text-white/80 hover:text-white rounded-md hover:bg-white/5 transition shrink-0 touch-manipulation"
             onClick={() => setMenuOpen((o) => !o)}
             aria-expanded={menuOpen}
-            aria-label={menuOpen ? 'Fermer le menu' : 'Ouvrir le menu'}
+            aria-label={menuOpen ? 'Close menu' : 'Open menu'}
           >
             <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.75" viewBox="0 0 24 24">
               {menuOpen ? (

@@ -6,7 +6,7 @@ interface Props {
 
 function formatDate(iso: string) {
   try {
-    return new Date(iso).toLocaleDateString('fr-LU', {
+    return new Date(iso).toLocaleDateString('en-GB', {
       day: 'numeric',
       month: 'short',
     })
@@ -23,7 +23,7 @@ function formatYear(iso: string) {
   }
 }
 
-/** Salles encore non résolues côté export (référence interne uniquement). */
+/** Rooms unresolved in export (internal reference only). */
 function displayRoom(room: string | undefined): string {
   const t = room?.trim() ?? ''
   if (!t) return ''
@@ -85,7 +85,7 @@ export default function ConcertCard({ concert }: Props) {
             className="text-white/45 text-xs tracking-wide uppercase line-clamp-1 min-h-[1.25rem]"
             title={formatYear(concert.date_start) || undefined}
           >
-            Saison visuelle {formatYear(concert.date_start) || '2026'}
+            Visual season {formatYear(concert.date_start) || '2026'}
           </p>
 
           <div
@@ -123,7 +123,7 @@ export default function ConcertCard({ concert }: Props) {
             href="/"
             className="block w-full shrink-0 text-center text-xs py-[0.4375rem] border border-white/30 text-white/70 hover:border-white hover:bg-white hover:text-black transition-colors"
           >
-            Plus d&apos;informations
+            More information
           </a>
         </div>
       </div>
