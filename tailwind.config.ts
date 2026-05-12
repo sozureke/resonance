@@ -24,6 +24,9 @@ const config: Config = {
       animation: {
         'slide-up': 'slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1)',
         'fade-in': 'fadeIn 0.3s ease',
+        'concerts-strip': 'concertsStrip 0.42s cubic-bezier(0.22, 1, 0.36, 1) both',
+        'concert-card-in': 'concertCardIn 0.4s cubic-bezier(0.22, 1, 0.36, 1) both',
+        'tag-cross': 'tagCross 0.22s cubic-bezier(0.22, 1, 0.36, 1) both',
       },
       keyframes: {
         slideUp: {
@@ -33,6 +36,18 @@ const config: Config = {
         fadeIn: {
           '0%': { opacity: '0' },
           '100%': { opacity: '1' },
+        },
+        concertsStrip: {
+          '0%': { opacity: '0', transform: 'translateX(14px)' },
+          '100%': { opacity: '1', transform: 'translateX(0)' },
+        },
+        concertCardIn: {
+          '0%': { opacity: '0', transform: 'translateY(14px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        tagCross: {
+          '0%': { opacity: '0', transform: 'scale(0.82)' },
+          '100%': { opacity: '1', transform: 'scale(1)' },
         },
       },
     },

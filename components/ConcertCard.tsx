@@ -23,21 +23,32 @@ function formatYear(iso: string) {
   }
 }
 
-function extractMainPerformer(castFull: string): string {
-  if (!castFull) return ''
-  const first = castFull.split('|')[0].trim()
-  // Remove role in parentheses for brevity
-  return first.replace(/\s*\([^)]+\)/, '').trim()
+/** Salles encore non résolues côté export (référence interne uniquement). */
+function displayRoom(room: string | undefined): string {
+  const t = room?.trim() ?? ''
+  if (!t) return ''
+  if (/^[0-9a-f:]+$/i.test(t.replace(/\s/g, ''))) return ''
+  return t
+}
+
+function compactTags(concert: Concert): string[] {
+  const source = [concert.tag1, concert.genre, concert.tag2]
+    .filter((t): t is string => Boolean(t) && t !== '0')
+    .map((t) => t.trim())
+
+  return Array.from(new Set(source)).slice(0, 2)
 }
 
 export default function ConcertCard({ concert }: Props) {
-  const tags = [concert.tag1, concert.tag2, concert.genre].filter(Boolean)
+  const tags = compactTags(concert)
+  const roomText = displayRoom(concert.room) || 'Philharmonie Luxembourg'
+  const tagsTitle = tags.length > 0 ? tags.join(', ') : undefined
 
   return (
-    <div className="flex-shrink-0 w-64 md:w-72 bg-[#111] rounded overflow-hidden flex flex-col group cursor-pointer hover:bg-[#181818] transition-colors">
+    <div className="flex-shrink-0 w-64 md:w-72 h-[446px] md:h-[460px] bg-[#111] rounded overflow-hidden flex flex-col">
       {/* Photo placeholder */}
       <div
-        className="w-full h-40 relative overflow-hidden"
+        className="w-full h-[170px] md:h-[186px] shrink-0 relative overflow-hidden"
         style={{ background: 'linear-gradient(135deg, #1a1a1a 0%, #222 50%, #181818 100%)' }}
       >
         {/* Subtle accent line */}
@@ -46,7 +57,7 @@ export default function ConcertCard({ concert }: Props) {
           style={{ background: 'linear-gradient(90deg, #ff1a8a, #ff4d2e)' }}
         />
         {/* Genre text watermark */}
-        {concert.genre && (
+        {concert.genre && concert.genre !== '0' && (
           <span className="absolute top-3 right-3 text-white/10 text-4xl font-serif italic leading-none select-none"
             style={{ fontFamily: "'Playfair Display', serif" }}>
             {concert.genre.charAt(0)}
@@ -59,55 +70,61 @@ export default function ConcertCard({ concert }: Props) {
         </div>
       </div>
 
-      {/* Content */}
-      <div className="p-4 flex flex-col flex-1 gap-2">
-        <h3
-          className="text-white font-medium text-sm leading-snug line-clamp-2"
-          style={{ fontFamily: "'Playfair Display', serif", fontSize: '15px' }}
-        >
-          {concert.title}
-        </h3>
-
-        {concert.subtitle && (
-          <p className="text-white/50 text-xs line-clamp-1">{concert.subtitle}</p>
-        )}
-
-        <p className="text-white/40 text-xs line-clamp-1">
-          {extractMainPerformer(concert.cast_full)}
-        </p>
-
-        {/* Tags */}
-        {tags.length > 0 && (
-          <div className="flex gap-1.5 flex-wrap mt-auto pt-1">
-            {tags.map((tag) => (
-              <span
-                key={tag}
-                className="text-[10px] px-2 py-0.5 rounded-full border border-white/15 text-white/40"
-              >
-                {tag}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Venue */}
-        {concert.room && (
-          <p
-            className="text-white/30 text-[10px] mt-1"
-            style={{ fontFamily: "'JetBrains Mono', monospace" }}
+      {/* Demo card: only core info for visual consistency */}
+      <div className="flex flex-1 flex-col min-h-0 p-3 pt-2.5 justify-between">
+        <div className="shrink-0 flex flex-col gap-1">
+          <h3
+            className="text-white font-medium leading-snug line-clamp-2 min-h-[2.625rem]"
+            style={{ fontFamily: "'Playfair Display', serif", fontSize: '15px' }}
+            title={concert.title}
           >
-            {concert.room}
-          </p>
-        )}
+            {concert.title}
+          </h3>
 
-        {/* Buttons */}
-        <div className="flex gap-2 mt-3">
-          <button className="flex-1 text-xs py-2 bg-white text-black font-medium hover:bg-white/90 transition">
-            Réservez
-          </button>
-          <button className="flex-1 text-xs py-2 border border-white/30 text-white/70 hover:border-white hover:text-white transition">
+          <p
+            className="text-white/45 text-xs tracking-wide uppercase line-clamp-1 min-h-[1.25rem]"
+            title={formatYear(concert.date_start) || undefined}
+          >
+            Saison visuelle {formatYear(concert.date_start) || '2026'}
+          </p>
+
+          <div
+            className="mt-2 shrink-0 h-[4rem] flex flex-wrap content-start gap-2 overflow-hidden min-w-0"
+            title={tagsTitle}
+          >
+            {tags.length > 0 ? (
+              tags.map((tag) => (
+                <span
+                  key={tag}
+                  title={tag}
+                  className="w-fit max-w-full min-w-0 truncate inline-block text-[10px] font-medium tracking-wide px-2.5 py-0.5 rounded-full border border-white/20 bg-white/[0.08] text-white/75 shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]"
+                >
+                  {tag}
+                </span>
+              ))
+            ) : (
+              <span className="h-px w-full opacity-0 pointer-events-none" aria-hidden>
+                &nbsp;
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="shrink-0 flex flex-col gap-2 pt-1.5">
+          <p
+            className="text-white/35 text-[10px] leading-snug line-clamp-2 min-h-[2.25rem]"
+            style={{ fontFamily: "'JetBrains Mono', monospace" }}
+            title={roomText || undefined}
+          >
+            {roomText || '\u00a0'}
+          </p>
+
+          <a
+            href="/"
+            className="block w-full shrink-0 text-center text-xs py-[0.4375rem] border border-white/30 text-white/70 hover:border-white hover:bg-white hover:text-black transition-colors"
+          >
             Plus d&apos;informations
-          </button>
+          </a>
         </div>
       </div>
     </div>

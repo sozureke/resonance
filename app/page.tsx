@@ -1,16 +1,27 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Nav from '@/components/Nav'
 import HeroSection from '@/components/HeroSection'
 import ConcertCard from '@/components/ConcertCard'
 import TagCloud from '@/components/TagCloud'
 import { Concert } from '@/types/concert'
 
+function concertHasTag(concert: Concert, tag: string) {
+  return [concert.tag1, concert.tag2, concert.genre].some((t) => t === tag)
+}
+
+const GRID_ROW_LIMIT = 48
+
 export default function Home() {
   const [concerts, setConcerts] = useState<Concert[]>([])
   const [loading, setLoading] = useState(true)
+  const [activeTag, setActiveTag] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ left: 0, behavior: 'smooth' })
+  }, [activeTag])
 
   useEffect(() => {
     fetch('/api/concerts')
@@ -22,11 +33,12 @@ export default function Home() {
       .catch(() => setLoading(false))
   }, [])
 
-  // Display first 8 concerts for the grid
-  const gridConcerts = concerts.slice(0, 8)
-
-  // Collect all genres/tags for the TagCloud
-  const uniqueTags = concerts
+  const gridConcerts = useMemo(() => {
+    const filtered = activeTag
+      ? concerts.filter((c) => concertHasTag(c, activeTag))
+      : concerts
+    return filtered.slice(0, GRID_ROW_LIMIT)
+  }, [concerts, activeTag])
 
   const scrollLeft = () => {
     scrollRef.current?.scrollBy({ left: -300, behavior: 'smooth' })
@@ -47,7 +59,7 @@ export default function Home() {
           <div className="flex items-end justify-between mb-8">
             <div>
               <p className="text-[#ff1a8a] text-xs tracking-widest uppercase mb-2">
-                Saison 2024–2025
+                Saison 2024–2026
               </p>
               <h2
                 className="text-white text-2xl md:text-3xl"
@@ -77,7 +89,10 @@ export default function Home() {
           {loading ? (
             <div className="flex gap-4">
               {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="flex-shrink-0 w-64 h-80 bg-white/5 rounded animate-pulse" />
+                <div
+                  key={i}
+                  className="flex-shrink-0 w-64 md:w-72 h-[446px] md:h-[460px] bg-white/5 rounded animate-pulse"
+                />
               ))}
             </div>
           ) : (
@@ -85,19 +100,51 @@ export default function Home() {
               ref={scrollRef}
               className="flex gap-4 overflow-x-auto no-scrollbar pb-4"
             >
-              {gridConcerts.map((concert) => (
-                <ConcertCard key={concert.id} concert={concert} />
-              ))}
+              {gridConcerts.length === 0 ? (
+                <div
+                  key={activeTag ?? '__empty'}
+                  className="animate-concerts-strip py-8"
+                >
+                  <p className="text-white/45 text-sm mb-4">
+                    Fir dëser Kategorie gëtt et elo keng Concerten.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTag(null)}
+                    className="text-[#ff1a8a] text-xs tracking-wide underline-offset-4 hover:text-white hover:underline"
+                  >
+                    All Concerten weisen
+                  </button>
+                </div>
+              ) : (
+                <div
+                  key={activeTag ?? '__all'}
+                  className="flex gap-4 animate-concerts-strip"
+                >
+                  {gridConcerts.map((concert, i) => (
+                    <div
+                      key={concert.id}
+                      className="flex-shrink-0 animate-concert-card-in"
+                      style={{ animationDelay: `${Math.min(i, 14) * 38}ms` }}
+                    >
+                      <ConcertCard concert={concert} />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
           {/* Tag cloud */}
           {concerts.length > 0 && (
             <div className="mt-12">
-              <p className="text-white/30 text-xs tracking-widest uppercase mb-4">
-                Explorer par ambiance
-              </p>
-              <TagCloud concerts={concerts} />
+              <TagCloud
+                concerts={concerts}
+                activeTag={activeTag}
+                onTagClick={(tag) =>
+                  setActiveTag((prev) => (prev === tag ? null : tag))
+                }
+              />
             </div>
           )}
         </div>
@@ -108,7 +155,7 @@ export default function Home() {
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <p className="text-white/30 text-xs"
             style={{ fontFamily: "'DM Sans', sans-serif" }}>
-            © 2025 Philharmonie Luxembourg · Resonance est un prototype IA
+            © 2026 Philharmonie Luxembourg · Resonance est un prototype IA
           </p>
         </div>
       </footer>

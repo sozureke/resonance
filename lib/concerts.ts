@@ -37,7 +37,18 @@ function parseConcerts(): Concert[] {
       cast_full: cols[idx.cast_full]?.trim() ?? '',
       program_full: cols[idx.program_full]?.trim() ?? '',
     }
-  }).filter((c) => c.id && c.title)
+  })
+    .filter((c) => c.id && c.title)
+    .sort((a, b) => {
+      const ta = new Date(a.date_start).getTime()
+      const tb = new Date(b.date_start).getTime()
+      const aOk = !Number.isNaN(ta)
+      const bOk = !Number.isNaN(tb)
+      if (!aOk && !bOk) return 0
+      if (!aOk) return 1
+      if (!bOk) return -1
+      return tb - ta // plus récent d’abord (2026 → 2024)
+    })
 }
 
 // Parse once at module level — cached for the lifetime of the process
