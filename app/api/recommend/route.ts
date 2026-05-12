@@ -47,20 +47,38 @@ function bridgesFromArc(arc?: string): string[] {
 
 export async function POST(req: NextRequest) {
   try {
-    const { query } = (await req.json()) as { query?: string }
+    const { query, exclude_ids } = (await req.json()) as {
+      query?: string
+      exclude_ids?: unknown
+    }
     const trimmed = query?.trim()
     if (!trimmed) {
       return NextResponse.json({ error: 'query is required' }, { status: 400 })
     }
 
+    const excludes = Array.isArray(exclude_ids)
+      ? exclude_ids.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      : undefined
+
     const agentRes = await fetch(`${BACKEND_URL}/agent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: trimmed }),
+      body: JSON.stringify({
+        message: trimmed,
+        ...(excludes?.length ? { exclude_ids: excludes } : {}),
+      }),
       cache: 'no-store',
     })
     if (!agentRes.ok) {
-      return NextResponse.json({ error: 'Backend agent request failed' }, { status: 502 })
+      const raw = await agentRes.text().catch(() => '')
+      let msg = `Backend agent failed (${agentRes.status})`
+      try {
+        const j = JSON.parse(raw) as { detail?: string }
+        if (typeof j?.detail === 'string') msg = j.detail
+      } catch {
+        if (raw.trim()) msg = raw.trim().slice(0, 280)
+      }
+      return NextResponse.json({ error: msg }, { status: 502 })
     }
 
     const agentPayload = (await agentRes.json()) as BackendAgentResponse
