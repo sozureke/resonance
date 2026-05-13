@@ -7,6 +7,8 @@ interface Props {
   isListening: boolean
   intensity: number
   searchPulse: number
+  introReplayKey?: number
+  opacityBoost?: number
 }
 
 function makeSoftDot(): THREE.Texture {
@@ -146,6 +148,7 @@ uniform float uRingAmp;
 uniform float uSubmitImpulse;
 uniform float uSubmitRingPhase;
 uniform float uSubmitRingAmp;
+uniform float uOpacityBoost;
 
 in vec3 position;
 in float aKind;
@@ -339,7 +342,8 @@ void main() {
   vec3 priorityHue = vec3(1.0, 0.102, 0.541) * 0.5 + vec3(1.0) * 0.3 + vec3(1.0, 0.36, 0.14) * 0.2;
   vec3 finalHue = mix(baseHue, priorityHue, 0.78);
   vColor = finalHue * brightness * aSz;
-  vAlpha = min(0.95, 0.55 + brightness * 0.35) * tw;
+  float alphaCore = min(0.95, 0.55 + brightness * 0.35) * tw;
+  vAlpha = clamp(alphaCore * uOpacityBoost, 0.0, 1.0);
   vTw = tw;
 
   vec4 mvPosition = modelViewMatrix * vec4(localPos, 1.0);
@@ -371,14 +375,32 @@ void main() {
 }
 `
 
-export default function ParticleSphere({ isListening, intensity, searchPulse }: Props) {
+export default function ParticleSphere({
+  isListening,
+  intensity,
+  searchPulse,
+  introReplayKey = 0,
+  opacityBoost = 1,
+}: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
-  const stateRef = useRef({ isListening, intensity, searchPulse })
+  const stateRef = useRef({
+    isListening,
+    intensity,
+    searchPulse,
+    introReplayKey,
+    opacityBoost,
+  })
   const calmBlendRef = useRef(0)
 
   useEffect(() => {
-    stateRef.current = { isListening, intensity, searchPulse }
-  }, [isListening, intensity, searchPulse])
+    stateRef.current = {
+      isListening,
+      intensity,
+      searchPulse,
+      introReplayKey,
+      opacityBoost,
+    }
+  }, [isListening, intensity, searchPulse, introReplayKey, opacityBoost])
 
   useEffect(() => {
     const mount = mountRef.current
@@ -501,6 +523,7 @@ export default function ParticleSphere({ isListening, intensity, searchPulse }: 
         uSubmitImpulse: { value: 0 },
         uSubmitRingPhase: { value: 0 },
         uSubmitRingAmp: { value: 0 },
+        uOpacityBoost: { value: 1 },
         uMap: { value: tex },
       },
       vertexShader,
@@ -532,6 +555,7 @@ export default function ParticleSphere({ isListening, intensity, searchPulse }: 
     const tiltM4 = new THREE.Matrix4()
 
     const submitPulseRef = { version: 0, t0: -1e6 }
+    const introReplayRef = { version: 0, t0: 0 }
     const gyroRaw = { gx: 0, gy: 0, ok: false }
     const gyroSm = { x: 0, y: 0 }
     let gyroMix = 0
@@ -645,7 +669,14 @@ export default function ParticleSphere({ isListening, intensity, searchPulse }: 
       const cEase = c * c * (3.0 - 2.0 * c)
 
       const t = clock.getElapsedTime()
-      const intro = introFromElapsed(t)
+
+      const irk = stateRef.current.introReplayKey
+      if (irk !== introReplayRef.version) {
+        introReplayRef.version = irk
+        introReplayRef.t0 = t
+      }
+      const introElapsed = t - introReplayRef.t0
+      const intro = introFromElapsed(introElapsed)
       mat.uniforms.uIntroScale.value = intro.uIntroScale
       mat.uniforms.uIntroLift.value = intro.uIntroLift
       mat.uniforms.uStrikeImpulse.value = intro.uStrikeImpulse
@@ -718,6 +749,10 @@ export default function ParticleSphere({ isListening, intensity, searchPulse }: 
       mat.uniforms.uFocus.value = cEase
       mat.uniforms.uIntensity.value = THREE.MathUtils.clamp(intens, 0, 1)
       mat.uniforms.uGain.value = gain
+      mat.uniforms.uOpacityBoost.value = Math.max(
+        0,
+        stateRef.current.opacityBoost ?? 1,
+      )
       mat.uniforms.uCraterStrength.value = craterStrength
       if (craterStrength > 0.001 && hasCrater) {
         mat.uniforms.uCraterDir.value.copy(craterDirLocal)

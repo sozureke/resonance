@@ -16,6 +16,7 @@ export default function Home() {
   const [concerts, setConcerts] = useState<Concert[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTag, setActiveTag] = useState<string | null>(null)
+  const [hideBelowHero, setHideBelowHero] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -48,10 +49,17 @@ export default function Home() {
 
   return (
     <main className="bg-black min-h-screen">
-      <HeroSection />
+      <HeroSection onBelowFoldHiddenChange={setHideBelowHero} />
 
-      {/* Concert grid section */}
-      <section className="bg-black py-16 px-4 md:px-8">
+      {/* Concert grid section — fades out while a search / journey is active */}
+      <section
+        className={`bg-black py-16 px-4 md:px-8 transition-[opacity,transform,max-height] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+          hideBelowHero
+            ? 'opacity-0 max-h-0 overflow-hidden py-0 pointer-events-none -translate-y-3'
+            : 'opacity-100 max-h-[5000px] translate-y-0'
+        }`}
+        aria-hidden={hideBelowHero}
+      >
         <div className="max-w-7xl mx-auto">
           {/* Section header */}
           <div className="flex items-end justify-between mb-8">
