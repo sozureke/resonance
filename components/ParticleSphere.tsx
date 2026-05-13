@@ -9,6 +9,8 @@ interface Props {
   searchPulse: number
   introReplayKey?: number
   opacityBoost?: number
+  queryLoadStart?: number | null
+  queryLoadEnd?: number | null
 }
 
 function makeSoftDot(): THREE.Texture {
@@ -41,7 +43,8 @@ function pixelRatioForWidth(cssWidth: number): number {
   return Math.min(dpr, 1.75)
 }
 
-const RADIUS = 2.2
+/** Particle shell radius; ×0.9 vs legacy 2.2 so the sphere fits the viewport with margin. */
+const RADIUS = 2.2 * 0.9
 const COUNT = 48_000
 const INTRO_DURATION = 2.45
 
@@ -149,6 +152,8 @@ uniform float uSubmitImpulse;
 uniform float uSubmitRingPhase;
 uniform float uSubmitRingAmp;
 uniform float uOpacityBoost;
+uniform float uLoadAlphaMul;
+uniform float uIdleOpacityScale;
 
 in vec3 position;
 in float aKind;
@@ -343,7 +348,7 @@ void main() {
   vec3 finalHue = mix(baseHue, priorityHue, 0.78);
   vColor = finalHue * brightness * aSz;
   float alphaCore = min(0.95, 0.55 + brightness * 0.35) * tw;
-  vAlpha = clamp(alphaCore * uOpacityBoost, 0.0, 1.0);
+  vAlpha = clamp(alphaCore * uOpacityBoost * uLoadAlphaMul * uIdleOpacityScale, 0.0, 1.0);
   vTw = tw;
 
   vec4 mvPosition = modelViewMatrix * vec4(localPos, 1.0);
@@ -360,6 +365,7 @@ void main() {
 const fragmentShader = /* glsl */ `
 precision highp float;
 uniform sampler2D uMap;
+uniform float uWhiteBlend;
 in vec3 vColor;
 in float vAlpha;
 in float vTw;
@@ -371,9 +377,19 @@ void main() {
   vec4 tex = texture(uMap, gl_PointCoord);
   float cover = pow(tex.a, 1.12);
   float a = cover * vAlpha;
-  fragColor = vec4(vColor * tex.rgb, a);
+  vec3 lit = vColor * tex.rgb;
+  vec3 outRgb = mix(lit, vec3(1.0), clamp(uWhiteBlend, 0.0, 1.0));
+  fragColor = vec4(outRgb, a);
 }
 `
+
+const LOADING_SPEED_MUL = 1.5
+const LOADING_PULSE_PERIOD_MS = 2000
+const LOADING_SPEED_RETURN_MS = 1000
+/** Opacity pulse while API in progress: 0.85 → 1.0 → 0.85 over 2s (subtle). */
+function loadingOpacityPulse01(elapsedSinceStartMs: number) {
+  return 0.925 + 0.075 * Math.sin((elapsedSinceStartMs / LOADING_PULSE_PERIOD_MS) * Math.PI * 2)
+}
 
 export default function ParticleSphere({
   isListening,
@@ -381,6 +397,8 @@ export default function ParticleSphere({
   searchPulse,
   introReplayKey = 0,
   opacityBoost = 1,
+  queryLoadStart = null,
+  queryLoadEnd = null,
 }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
   const stateRef = useRef({
@@ -389,6 +407,8 @@ export default function ParticleSphere({
     searchPulse,
     introReplayKey,
     opacityBoost,
+    queryLoadStart,
+    queryLoadEnd,
   })
   const calmBlendRef = useRef(0)
 
@@ -399,8 +419,18 @@ export default function ParticleSphere({
       searchPulse,
       introReplayKey,
       opacityBoost,
+      queryLoadStart,
+      queryLoadEnd,
     }
-  }, [isListening, intensity, searchPulse, introReplayKey, opacityBoost])
+  }, [
+    isListening,
+    intensity,
+    searchPulse,
+    introReplayKey,
+    opacityBoost,
+    queryLoadStart,
+    queryLoadEnd,
+  ])
 
   useEffect(() => {
     const mount = mountRef.current
@@ -424,7 +454,7 @@ export default function ParticleSphere({
     })
     renderer.outputColorSpace = THREE.SRGBColorSpace
     renderer.toneMapping = THREE.ACESFilmicToneMapping
-    renderer.toneMappingExposure = 1.15
+    renderer.toneMappingExposure = 1.24
 
     const readSize = () => {
       const r = mount.getBoundingClientRect()
@@ -524,6 +554,9 @@ export default function ParticleSphere({
         uSubmitRingPhase: { value: 0 },
         uSubmitRingAmp: { value: 0 },
         uOpacityBoost: { value: 1 },
+        uLoadAlphaMul: { value: 1 },
+        uIdleOpacityScale: { value: 2 },
+        uWhiteBlend: { value: 0 },
         uMap: { value: tex },
       },
       vertexShader,
@@ -606,7 +639,7 @@ export default function ParticleSphere({
     const craterDirLocal = new THREE.Vector3()
     let craterBlend = 0
 
-    const BRIGHTNESS_MASTER = 1.45
+    const BRIGHTNESS_MASTER = 1.62
 
     const onMove = (e: MouseEvent) => {
       mouse.px = e.clientX
@@ -695,12 +728,42 @@ export default function ParticleSphere({
       mat.uniforms.uSubmitRingPhase.value = sub.phase
       mat.uniforms.uSubmitRingAmp.value = sub.amp
 
+      const wall = typeof performance !== 'undefined' ? performance.now() : t * 1000
+      const qs = stateRef.current.queryLoadStart ?? null
+      const qe = stateRef.current.queryLoadEnd ?? null
+
+      const isFetching = qs != null && qe == null
+
+      let loadAlphaMul = 1
+      let simSpeedMul = 1
+      const idleOpacityScale = isFetching ? 1 : 2
+
+      if (qs != null) {
+        if (isFetching) {
+          simSpeedMul = LOADING_SPEED_MUL
+          loadAlphaMul = loadingOpacityPulse01(wall - qs)
+        } else {
+          const sinceEnd = wall - qe!
+          if (sinceEnd < LOADING_SPEED_RETURN_MS) {
+            simSpeedMul = THREE.MathUtils.lerp(
+              LOADING_SPEED_MUL,
+              1,
+              Math.min(1, sinceEnd / LOADING_SPEED_RETURN_MS),
+            )
+          }
+        }
+      }
+
+      mat.uniforms.uLoadAlphaMul.value = loadAlphaMul
+      mat.uniforms.uIdleOpacityScale.value = idleOpacityScale
+      mat.uniforms.uWhiteBlend.value = 0
+
       const speedTarget = 0.8 + intens * 1.2
       speedSmooth += (speedTarget - speedSmooth) * 0.05
       const dt = Math.min(0.05, Math.max(0, t - prevT))
       prevT = t
       if (!listening) {
-        simTime += dt * speedSmooth
+        simTime += dt * speedSmooth * simSpeedMul
       }
       const simT = simTime
 

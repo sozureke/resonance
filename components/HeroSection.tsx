@@ -10,16 +10,17 @@ const ParticleSphere = dynamic(() => import('./ParticleSphere'), {
   loading: () => <div className="w-full h-full bg-black" />,
 })
 
-/** Sphere fades out → panel slides in → sphere reappears on the left with the same shader intro. */
 type JourneyRevealPhase = 'idle' | 'sphere_exit' | 'panel_only' | 'split'
 
-const SPHERE_EXIT_MS = 480
-const PANEL_SETTLE_MS = 520
-/** Extra beat before the sphere fades back in (less abrupt). */
-const SPHERE_REENTER_DELAY_MS = 450
+const OPEN_SPHERE_SHRINK_MS = 580
+const PANEL_SETTLE_MS = 620
+const SPHERE_REENTER_DELAY_MS = 550
+
+const EXIT_SIMULT_MS = 380
+const EXIT_BLACK_HOLD_MS = 1750
+const POST_INTRO_HERO_MS = 2600
 
 interface HeroSectionProps {
-  /** Hide concerts / below-fold while searching or showing a journey */
   onBelowFoldHiddenChange?: (hidden: boolean) => void
 }
 
@@ -34,8 +35,16 @@ export default function HeroSection({
   const [isInputFocused, setIsInputFocused] = useState(false)
   const [introReplayKey, setIntroReplayKey] = useState(0)
   const [revealPhase, setRevealPhase] = useState<JourneyRevealPhase>('idle')
+  const [queryLoadStart, setQueryLoadStart] = useState<number | null>(null)
+  const [queryLoadEnd, setQueryLoadEnd] = useState<number | null>(null)
+  const [closeAnimStep, setCloseAnimStep] = useState(0)
+  const [exitBlackout, setExitBlackout] = useState(false)
+  const [postExitIntroBlock, setPostExitIntroBlock] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const revealTimersRef = useRef<number[]>([])
+  const exitTimersRef = useRef<number[]>([])
+  const postIntroTimerRef = useRef<number | null>(null)
+  const exitActiveRef = useRef(false)
 
   const clearRevealTimers = useCallback(() => {
     for (const id of revealTimersRef.current) {
@@ -44,19 +53,42 @@ export default function HeroSection({
     revealTimersRef.current = []
   }, [])
 
-  const heroBusy =
-    loading || revealPhase !== 'idle' || showResult
+  const clearExitTimers = useCallback(() => {
+    for (const id of exitTimersRef.current) {
+      window.clearTimeout(id)
+    }
+    exitTimersRef.current = []
+  }, [])
+
+  const belowFoldHidden =
+    loading ||
+    postExitIntroBlock ||
+    exitBlackout ||
+    (closeAnimStep >= 1 && closeAnimStep <= 2) ||
+    (closeAnimStep === 0 &&
+      !exitBlackout &&
+      (revealPhase !== 'idle' || showResult))
 
   useEffect(() => {
-    onBelowFoldHiddenChange?.(heroBusy)
-  }, [heroBusy, onBelowFoldHiddenChange])
+    onBelowFoldHiddenChange?.(belowFoldHidden)
+  }, [belowFoldHidden, onBelowFoldHiddenChange])
+
+  useEffect(() => {
+    return () => clearExitTimers()
+  }, [clearExitTimers])
 
   const intensity = loading ? 0.9 : 0
-  const isListening =
-    !loading &&
-    revealPhase === 'idle' &&
-    !showResult &&
-    (isInputFocused || query.trim().length > 0)
+
+  const clearPostIntroTimer = useCallback(() => {
+    if (postIntroTimerRef.current != null) {
+      window.clearTimeout(postIntroTimerRef.current)
+      postIntroTimerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => clearPostIntroTimer()
+  }, [clearPostIntroTimer])
 
   const handleSubmit = async () => {
     const q = query.trim()
@@ -64,9 +96,17 @@ export default function HeroSection({
     setSearchPulse((n) => n + 1)
     setLoading(true)
     clearRevealTimers()
+    clearExitTimers()
+    clearPostIntroTimer()
+    exitActiveRef.current = false
+    setCloseAnimStep(0)
+    setExitBlackout(false)
+    setPostExitIntroBlock(false)
     setShowResult(false)
     setJourney(null)
     setRevealPhase('idle')
+    setQueryLoadStart(performance.now())
+    setQueryLoadEnd(null)
 
     try {
       const res = await fetch('/api/recommend', {
@@ -76,6 +116,7 @@ export default function HeroSection({
       })
       if (!res.ok) throw new Error('API error')
       const data: Journey = await res.json()
+      setQueryLoadEnd(performance.now())
       setJourney(data)
       setLoading(false)
 
@@ -84,18 +125,20 @@ export default function HeroSection({
       const t1 = window.setTimeout(() => {
         setShowResult(true)
         setRevealPhase('panel_only')
-      }, SPHERE_EXIT_MS)
+      }, OPEN_SPHERE_SHRINK_MS)
       revealTimersRef.current.push(t1)
 
       const t2 = window.setTimeout(() => {
         setRevealPhase('split')
         setIntroReplayKey((k) => k + 1)
-      }, SPHERE_EXIT_MS + PANEL_SETTLE_MS + SPHERE_REENTER_DELAY_MS)
+      }, OPEN_SPHERE_SHRINK_MS + PANEL_SETTLE_MS + SPHERE_REENTER_DELAY_MS)
       revealTimersRef.current.push(t2)
     } catch (err) {
       console.error(err)
       setLoading(false)
       setRevealPhase('idle')
+      setQueryLoadStart(null)
+      setQueryLoadEnd(null)
     }
   }
 
@@ -103,35 +146,90 @@ export default function HeroSection({
     if (e.key === 'Enter') handleSubmit()
   }
 
-  const handleClose = () => {
+  const beginJourneyExit = useCallback(() => {
+    if (exitActiveRef.current || closeAnimStep > 0) return
+    exitActiveRef.current = true
     clearRevealTimers()
-    setShowResult(false)
-    setJourney(null)
-    setQuery('')
-    setRevealPhase('idle')
-  }
+    clearExitTimers()
 
-  const splitLayout = showResult && revealPhase !== 'sphere_exit'
+    const queue = (fn: () => void, ms: number) => {
+      const id = window.setTimeout(fn, ms)
+      exitTimersRef.current.push(id)
+    }
 
-  const sphereHidden =
-    revealPhase === 'sphere_exit' ||
+    const tAfterBlack = EXIT_SIMULT_MS + EXIT_BLACK_HOLD_MS
+
+    setCloseAnimStep(1)
+    queue(() => {
+      setCloseAnimStep(2)
+      setExitBlackout(true)
+    }, EXIT_SIMULT_MS)
+    queue(() => {
+      setExitBlackout(false)
+      setShowResult(false)
+      setJourney(null)
+      setQuery('')
+      setRevealPhase('idle')
+      setQueryLoadStart(null)
+      setQueryLoadEnd(null)
+      setCloseAnimStep(0)
+      setIntroReplayKey((k) => k + 1)
+      setPostExitIntroBlock(true)
+      clearPostIntroTimer()
+      postIntroTimerRef.current = window.setTimeout(() => {
+        setPostExitIntroBlock(false)
+        exitActiveRef.current = false
+        postIntroTimerRef.current = null
+      }, POST_INTRO_HERO_MS)
+    }, tAfterBlack)
+  }, [clearExitTimers, clearPostIntroTimer, clearRevealTimers])
+
+  const splitLayout =
+    showResult && revealPhase !== 'sphere_exit' && closeAnimStep < 2
+
+  const openingShrink =
+    revealPhase === 'sphere_exit' || revealPhase === 'panel_only'
+
+  const exitingCollapse = closeAnimStep >= 1 && closeAnimStep <= 2
+
+  const sphereOpacityClass =
     revealPhase === 'panel_only'
-  const sphereOpacityClass = sphereHidden
-    ? 'opacity-0 pointer-events-none'
-    : 'opacity-100'
+      ? 'opacity-0 pointer-events-none'
+      : 'opacity-100'
 
-  const sphereScaleClass =
-    revealPhase === 'split'
-      ? 'scale-[0.8]'
-      : 'scale-100'
+  const sphereScaleClass = exitingCollapse
+    ? 'scale-0'
+    : openingShrink
+      ? 'scale-0'
+      : revealPhase === 'split' && closeAnimStep < 2
+        ? 'scale-[0.8]'
+        : 'scale-100'
 
   const transitionSphere =
-    'transition-[opacity,transform] duration-[1100ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
+    revealPhase === 'sphere_exit'
+      ? 'transition-[opacity,transform] duration-[580ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
+      : exitingCollapse
+        ? 'transition-[opacity,transform] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
+        : 'transition-[opacity,transform] duration-[1100ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
+
+  const layoutShellClass =
+    showResult && closeAnimStep >= 2
+      ? 'transition-all duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
+      : 'transition-all duration-[600ms] ease-out'
 
   const showHeroChrome =
     !loading &&
+    !postExitIntroBlock &&
+    !exitBlackout &&
     revealPhase === 'idle' &&
     !showResult
+
+  const isListening =
+    !loading &&
+    !postExitIntroBlock &&
+    revealPhase === 'idle' &&
+    !showResult &&
+    (isInputFocused || query.trim().length > 0)
 
   return (
     <section className="relative w-full h-screen bg-black overflow-hidden">
@@ -140,7 +238,7 @@ export default function HeroSection({
           splitLayout
             ? 'w-full h-[40vh] md:w-1/2 md:h-full'
             : 'w-full h-full'
-        } transition-all duration-500 ease-out`}
+        } ${layoutShellClass}`}
       >
         <div
           className={`absolute inset-0 origin-center ${transitionSphere} ${sphereOpacityClass} ${sphereScaleClass}`}
@@ -150,31 +248,38 @@ export default function HeroSection({
             intensity={intensity}
             searchPulse={searchPulse}
             introReplayKey={introReplayKey}
-            opacityBoost={revealPhase === 'split' ? 1.8 : 1}
+            opacityBoost={
+              revealPhase === 'split' && closeAnimStep < 2 ? 1.8 : 1
+            }
+            queryLoadStart={queryLoadStart}
+            queryLoadEnd={queryLoadEnd}
           />
         </div>
 
         <div
-          className={`absolute inset-0 flex flex-col items-center justify-end px-6 z-10 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+          className={`absolute inset-0 flex flex-col items-center justify-end px-6 z-10 transition-all ease-[cubic-bezier(0.22,1,0.36,1)] ${
+            postExitIntroBlock ? 'duration-700' : 'duration-[580ms]'
+          } ${
             showHeroChrome
               ? 'opacity-100 translate-y-0 pointer-events-auto'
               : 'opacity-0 translate-y-4 pointer-events-none'
           }`}
           style={{
-            paddingBottom: '156px',
+            paddingBottom: '212px',
             background:
-              'linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 100%)',
+              'linear-gradient(to top, rgba(0,0,0,0.58) 0%, transparent 100%)',
           }}
         >
-          <h1
-            className="text-white text-2xl md:text-3xl font-serif italic text-center leading-snug mb-6"
-            style={{ fontFamily: "'Playfair Display', serif" }}
-          >
-            What would you like to discover?
-          </h1>
+          <div className="flex w-full max-w-[480px] flex-col items-center text-center">
+            <label
+              htmlFor="hero-journey-query"
+              className="mb-3 block max-w-[40rem] font-fraunces text-[24px] leading-[1.15] italic text-[rgba(255,255,255,0.5)] [letter-spacing:0.03em]"
+            >
+              What would you like to discover?
+            </label>
 
-          <div className="flex w-full max-w-2xl rounded-sm overflow-hidden border border-white/60 focus-within:border-white transition-[border-color,box-shadow] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]">
             <input
+              id="hero-journey-query"
               ref={inputRef}
               type="text"
               value={query}
@@ -182,46 +287,57 @@ export default function HeroSection({
               onKeyDown={handleKeyDown}
               onFocus={() => setIsInputFocused(true)}
               onBlur={() => setIsInputFocused(false)}
-              placeholder="Late Baroque, something melancholic, surprise me…"
-              className="flex-1 bg-black text-white placeholder-white/40 text-sm md:text-base px-5 py-4 outline-none font-sans"
-              style={{ fontFamily: "'DM Sans', sans-serif" }}
+              placeholder="Take me somewhere I've never been..."
+              autoComplete="off"
+              className="
+                w-full max-w-[480px] bg-transparent px-0 py-1.5 text-center
+                font-fraunces text-[16px] italic leading-relaxed tracking-[-0.01em] text-white caret-[#ff1a8a] outline-none
+                placeholder:text-[rgba(255,255,255,0.28)] placeholder:transition-opacity
+                focus:placeholder:opacity-0
+              "
             />
-            <button
-              onClick={handleSubmit}
-              disabled={loading || !query.trim()}
-              aria-label="Search"
-              className="bg-black border-l border-white/30 px-5 flex items-center justify-center text-white hover:bg-white/10 transition disabled:opacity-30"
-            >
-              {loading ? (
-                <span className="w-4 h-4 border-2 border-white/50 border-t-white rounded-full animate-spin" />
-              ) : (
-                <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                  <polyline points="12 5 19 12 12 19" />
-                </svg>
-              )}
-            </button>
-          </div>
 
-          {loading && (
-            <p className="text-white/50 text-xs tracking-widest uppercase animate-pulse mt-6">
-              Composing your journey...
+            <div
+              className="relative mt-0 h-px w-full max-w-[480px] overflow-hidden bg-[rgba(255,255,255,0.10)]"
+              aria-hidden
+            >
+              <div
+                className="absolute left-0 top-1/2 w-[44%] h-px animate-hero-shimmer bg-gradient-to-r from-transparent via-[#ff1a8a] to-transparent opacity-90"
+              />
+            </div>
+
+            <p
+              className={`mt-6 font-mono text-[10px] uppercase tracking-[0.15em] transition-colors duration-300 ${
+                isInputFocused
+                  ? 'text-[rgba(255,255,255,0.45)]'
+                  : 'text-[rgba(255,255,255,0.25)]'
+              }`}
+            >
+              press enter to discover
             </p>
-          )}
+
+            {loading && (
+              <p className="mt-6 text-white/50 text-xs tracking-widest uppercase animate-pulse">
+                Composing your journey...
+              </p>
+            )}
+          </div>
         </div>
       </div>
 
       {showResult && journey && (
-        <JourneyResult journey={journey} onClose={handleClose} />
+        <JourneyResult
+          journey={journey}
+          onRequestExit={beginJourneyExit}
+          closeAnimStep={closeAnimStep}
+        />
+      )}
+
+      {exitBlackout && (
+        <div
+          className="fixed inset-0 z-[100] bg-black pointer-events-none"
+          aria-hidden
+        />
       )}
     </section>
   )

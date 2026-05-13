@@ -48,6 +48,3 @@ body {
   background-color: rgba(255, 255, 255, 0.12);
   border-radius: 999px;
 }
-.journey-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(255, 255, 255, 0.22);
-}

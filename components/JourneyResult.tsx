@@ -1,16 +1,26 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Journey, JourneyConcert } from '@/types/concert'
 
 interface Props {
   journey: Journey
-  onClose: () => void
+  /** Starts the parent’s sequential close animation (Back, Escape, or auto-dismiss after reserve). */
+  onRequestExit: () => void
+  /** 0 = visible; 1 = fade inner content; 2+ = slide panel off-screen (owned by parent timing). */
+  closeAnimStep: number
 }
 
 const FRAUNCES = "'Fraunces', Georgia, serif"
 const MONO = "'JetBrains Mono', monospace"
 const INTER_TIGHT = "'Inter Tight', system-ui, sans-serif"
+
+const TIMELINE_LINE_MS = 600
+const TIMELINE_DOT_STAGGER_MS = 150
+/** Progress bar + confirmation visible while this elapses */
+const RESERVE_CONFIRM_MS = 3000
+/** After the bar completes, hold the message this long before closing the sheet + sphere */
+const POST_RESERVE_BEFORE_EXIT_MS = 1500
 
 function formatPosterDate(iso: string): string {
   try {
@@ -51,7 +61,7 @@ function PosterCard({
 
   return (
     <article
-      className="px-10 py-10 border-t border-white/[0.08] animate-card-fade-up"
+      className="pl-14 pr-10 py-10 border-t border-white/[0.08] animate-card-fade-up"
       style={{
         minHeight: '180px',
         animationDelay: `${200 + index * 150}ms`,
@@ -85,9 +95,9 @@ function PosterCard({
         )}
       </div>
 
-      {/* Concert title */}
+      {/* Concert title + timeline node */}
       <h3
-        className="text-white mt-3"
+        className="relative text-white mt-3"
         style={{
           fontFamily: FRAUNCES,
           fontSize: '22px',
@@ -96,10 +106,17 @@ function PosterCard({
           letterSpacing: '-0.005em',
         }}
       >
+        <span
+          aria-hidden
+          className="absolute left-[-24px] top-1/2 h-[6px] w-[6px] -translate-y-1/2 rounded-full bg-[#ff4d2e] opacity-0 motion-reduce:opacity-100 motion-safe:animate-journey-timeline-dot"
+          style={{
+            animationDelay: `${TIMELINE_LINE_MS + index * TIMELINE_DOT_STAGGER_MS}ms`,
+            animationFillMode: 'forwards',
+          }}
+        />
         {concert.title}
       </h3>
 
-      {/* Optional subtitle — same 2-line clamp as performer */}
       {concert.subtitle && (
         <p
           className="mt-2"
@@ -118,7 +135,6 @@ function PosterCard({
         </p>
       )}
 
-      {/* Performer — max 2 lines, ellipsis */}
       {concert.cast_full && (
         <p
           className="mt-1.5"
@@ -137,7 +153,6 @@ function PosterCard({
         </p>
       )}
 
-      {/* Bridge text — narrative connection */}
       {concert.bridge && (
         <p
           className="italic"
@@ -155,7 +170,6 @@ function PosterCard({
         </p>
       )}
 
-      {/* Mood tags */}
       {tags.length > 0 && (
         <div className="flex flex-wrap gap-2 mt-5">
           {tags.map((tag) => (
@@ -179,144 +193,193 @@ function PosterCard({
   )
 }
 
-export default function JourneyResult({ journey, onClose }: Props) {
+export default function JourneyResult({
+  journey,
+  onRequestExit,
+  closeAnimStep,
+}: Props) {
   const [reservePhase, setReservePhase] = useState<'idle' | 'pending' | 'done'>('idle')
+  const autoDismissRef = useRef<number | null>(null)
+
+  const isClosing = closeAnimStep > 0
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape' && !isClosing) onRequestExit()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onRequestExit, isClosing])
+
+  useEffect(() => {
+    if (reservePhase !== 'done' || isClosing) return
+    const totalBeforeExit = RESERVE_CONFIRM_MS + POST_RESERVE_BEFORE_EXIT_MS
+    autoDismissRef.current = window.setTimeout(() => {
+      autoDismissRef.current = null
+      onRequestExit()
+    }, totalBeforeExit)
+    return () => {
+      if (autoDismissRef.current != null) {
+        window.clearTimeout(autoDismissRef.current)
+        autoDismissRef.current = null
+      }
+    }
+  }, [reservePhase, onRequestExit, isClosing])
 
   const handleReserve = () => {
-    if (reservePhase !== 'idle') return
+    if (reservePhase !== 'idle' || isClosing) return
     setReservePhase('pending')
-    window.setTimeout(() => {
-      setReservePhase('done')
-    }, 720)
+    window.setTimeout(() => setReservePhase('done'), 400)
   }
 
   const count = journey.concerts.length
   const range = formatRange(journey.concerts)
   const meta = `${count} concert${count === 1 ? '' : 's'}${range ? ` · ${range}` : ''}`
 
+  const innerFade = closeAnimStep >= 1
+  /** Exit together with sphere collapse (see HeroSection EXIT_SIMULT_MS, 380ms). */
+  const panelSlide = closeAnimStep >= 1
+
   return (
     <aside
-      className="
+      className={`
         absolute z-30 flex flex-col
         bg-[#0a0a0b]
         right-0 left-0 bottom-0
         h-[60vh]
         md:left-auto md:top-0 md:w-1/2 md:h-full
-        animate-panel-slide-up md:animate-panel-slide-in
-      "
+        transition-transform duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]
+        ${
+          panelSlide
+            ? '-translate-y-full translate-x-0 md:translate-y-0 md:translate-x-full pointer-events-none'
+            : 'translate-x-0 translate-y-0'
+        }
+        ${closeAnimStep === 0 ? 'animate-panel-slide-up md:animate-panel-slide-in' : ''}
+      `}
     >
-      {/* Header — journey title + meta */}
-      <header className="flex-shrink-0 px-10 pt-10 pb-6 relative">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close journey"
-          className="absolute top-6 right-8 text-white/35 hover:text-white/80 transition uppercase tracking-[0.18em]"
-          style={{ fontFamily: MONO, fontSize: '10px' }}
-        >
-          Close
-        </button>
+      <div
+        className={`flex h-full min-h-0 flex-col transition-opacity duration-[380ms] ease-out ${
+          innerFade ? 'pointer-events-none opacity-0' : 'opacity-100'
+        }`}
+      >
+        <header className="relative flex-shrink-0 px-10 pb-6 pt-10">
+          <button
+            type="button"
+            onClick={() => !isClosing && onRequestExit()}
+            disabled={isClosing}
+            className="absolute right-8 top-6 uppercase text-[rgba(255,255,255,0.5)] transition-colors hover:text-white disabled:opacity-40"
+            style={{
+              fontFamily: MONO,
+              fontSize: '11px',
+              letterSpacing: '0.15em',
+            }}
+          >
+            ← Back
+          </button>
 
-        <h2
-          className="text-white italic"
+          <h2
+            className="text-white italic pr-24"
+            style={{
+              fontFamily: FRAUNCES,
+              fontSize: '28px',
+              lineHeight: 1.2,
+              letterSpacing: '-0.01em',
+            }}
+          >
+            {journey.journey_title}
+          </h2>
+
+          <p
+            className="text-white/45 mt-2 uppercase tracking-[0.12em]"
+            style={{ fontFamily: MONO, fontSize: '11px' }}
+          >
+            {meta}
+          </p>
+        </header>
+
+        <div className="relative min-h-0 flex-1 overflow-y-auto journey-scroll">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute top-0 z-10 h-full w-px origin-top bg-[rgba(255,255,255,0.12)] motion-safe:animate-journey-timeline-line motion-reduce:scale-y-100 motion-reduce:animate-none"
+            style={{ left: '32px', transformOrigin: 'top' }}
+          />
+          {journey.concerts.map((concert, i) => (
+            <PosterCard key={concert.id} concert={concert} index={i} />
+          ))}
+        </div>
+
+        <div
+          className="flex-shrink-0 border-t border-white/[0.08] bg-[#0a0a0b] px-10 pb-10 pt-6"
           style={{
-            fontFamily: FRAUNCES,
-            fontSize: '28px',
-            lineHeight: 1.2,
-            letterSpacing: '-0.01em',
+            minHeight: reservePhase === 'done' ? '152px' : undefined,
           }}
         >
-          {journey.journey_title}
-        </h2>
-
-        <p
-          className="text-white/45 mt-2 uppercase tracking-[0.12em]"
-          style={{ fontFamily: MONO, fontSize: '11px' }}
-        >
-          {meta}
-        </p>
-      </header>
-
-      {/* Scrollable poster list */}
-      <div className="flex-1 overflow-y-auto journey-scroll">
-        {journey.concerts.map((concert, i) => (
-          <PosterCard key={concert.id} concert={concert} index={i} />
-        ))}
-      </div>
-
-      {/* Reserve CTA */}
-      <div
-        className="flex-shrink-0 px-10 pb-10 pt-6 border-t border-white/[0.08] bg-[#0a0a0b] transition-[padding] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
-        style={{
-          minHeight: reservePhase === 'done' ? '140px' : undefined,
-        }}
-      >
-        <div className="relative min-h-[52px]">
-          <div
-            className={`transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-              reservePhase === 'done'
-                ? 'opacity-0 translate-y-1 pointer-events-none'
-                : 'opacity-100 translate-y-0'
-            }`}
-          >
-            <button
-              type="button"
-              onClick={handleReserve}
-              disabled={reservePhase !== 'idle'}
-              className="
-                w-full uppercase
-                bg-white text-black
-                hover:bg-[#ff4d2e] hover:text-white
-                disabled:opacity-90 disabled:pointer-events-none
-                transition-[background-color,color,transform] duration-[400ms] ease-[cubic-bezier(0.22,1,0.36,1)]
-              "
-              style={{
-                height: '52px',
-                fontFamily: INTER_TIGHT,
-                fontSize: '13px',
-                fontWeight: 600,
-                letterSpacing: '0.15em',
-              }}
+          <div className="relative min-h-[52px]">
+            <div
+              className={`transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                reservePhase === 'done'
+                  ? 'pointer-events-none -translate-y-1 opacity-0'
+                  : 'translate-y-0 opacity-100'
+              }`}
             >
-              {reservePhase === 'pending' ? (
-                <span className="inline-flex items-center justify-center gap-3">
-                  <span className="inline-block w-4 h-4 border-2 border-black/35 border-t-black rounded-full animate-spin" />
-                  <span>Hold on…</span>
-                </span>
-              ) : (
-                'Reserve this journey'
-              )}
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={handleReserve}
+                disabled={reservePhase !== 'idle' || isClosing}
+                className="
+                  w-full uppercase
+                  bg-white text-black
+                  hover:bg-[#ff4d2e] hover:text-white
+                  disabled:pointer-events-none disabled:opacity-90
+                  transition-[background-color,color,transform] duration-[400ms] ease-[cubic-bezier(0.22,1,0.36,1)]
+                "
+                style={{
+                  height: '52px',
+                  fontFamily: INTER_TIGHT,
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  letterSpacing: '0.15em',
+                }}
+              >
+                {reservePhase === 'pending' ? (
+                  <span className="inline-flex items-center justify-center gap-3">
+                    <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-black/35 border-t-black" />
+                    <span>Hold on…</span>
+                  </span>
+                ) : (
+                  'Reserve this journey'
+                )}
+              </button>
+            </div>
 
-          <div
-            className={`absolute inset-x-0 top-0 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-              reservePhase === 'done'
-                ? 'opacity-100 translate-y-0'
-                : 'opacity-0 translate-y-2 pointer-events-none'
-            }`}
-            aria-live="polite"
-          >
-            <p
-              className="text-center text-white/85"
-              style={{ fontFamily: FRAUNCES, fontSize: '16px', lineHeight: 1.45 }}
+            <div
+              className={`absolute inset-x-0 top-0 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                reservePhase === 'done'
+                  ? 'translate-y-0 opacity-100'
+                  : 'pointer-events-none translate-y-2 opacity-0'
+              }`}
+              aria-live="polite"
             >
-              You&apos;re on the list. We&apos;ll follow up with booking details shortly.
-            </p>
-            <p
-              className="text-center text-white/40 mt-2 uppercase tracking-[0.14em]"
-              style={{ fontFamily: MONO, fontSize: '10px' }}
-            >
-              No payment taken yet
-            </p>
+              <p
+                className="text-center text-white/85"
+                style={{ fontFamily: FRAUNCES, fontSize: '16px', lineHeight: 1.45 }}
+              >
+                This journey is saved to your account. Pick up booking whenever you&apos;re ready.
+              </p>
+              <p
+                className="mt-2 text-center uppercase tracking-[0.14em] text-white/40"
+                style={{ fontFamily: MONO, fontSize: '10px' }}
+              >
+                No payment taken yet
+              </p>
+
+              <div className="mt-4 h-[2px] w-full overflow-hidden rounded-full bg-white/[0.08]">
+                <div
+                  key={reservePhase === 'done' ? 'bar-on' : 'bar-off'}
+                  className="h-[2px] w-full origin-left bg-[#ff4d2e] motion-safe:animate-reserve-bar-shrink motion-reduce:w-0"
+                />
+              </div>
+            </div>
           </div>
         </div>
       </div>

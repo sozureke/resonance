@@ -11,6 +11,9 @@ const DEFAULT_BRIDGES = [
   'The final step closes the journey with a complementary color.',
 ]
 
+/** Fallback title when the agent does not return an English headline (keeps UI language consistent). */
+const DEFAULT_JOURNEY_TITLE = 'Your resonance journey'
+
 type BackendAgentResponse = {
   arc?: string
   message?: string
@@ -65,6 +68,9 @@ export async function POST(req: NextRequest) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: trimmed,
+        /** Ask the agent for English copy when supported (titles / arc aligned with the UI). */
+        locale: 'en',
+        language: 'en',
         ...(excludes?.length ? { exclude_ids: excludes } : {}),
       }),
       cache: 'no-store',
@@ -124,8 +130,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No valid concerts were resolved' }, { status: 502 })
     }
 
+    const rawTitle = (agentPayload.message || agentPayload.arc || DEFAULT_JOURNEY_TITLE).trim()
     const journey: Journey = {
-      journey_title: (agentPayload.message || agentPayload.arc || 'Your Resonance journey').slice(0, 120),
+      journey_title: rawTitle.slice(0, 120) || DEFAULT_JOURNEY_TITLE,
       concerts: journeyConcerts,
     }
     return NextResponse.json(journey)

@@ -32,6 +32,10 @@ const config: Config = {
         'panel-slide-in': 'panelSlideIn 500ms cubic-bezier(0.22, 1, 0.36, 1) both',
         'panel-slide-up': 'panelSlideUp 500ms cubic-bezier(0.22, 1, 0.36, 1) both',
         'card-fade-up': 'cardFadeUp 400ms cubic-bezier(0.22, 1, 0.36, 1) both',
+        'journey-timeline-line': 'journeyTimelineLine 600ms cubic-bezier(0.22, 1, 0.36, 1) forwards',
+        'journey-timeline-dot': 'journeyTimelineDot 320ms ease forwards',
+        'reserve-bar-shrink': 'reserveBarShrink 3s linear forwards',
+        'hero-shimmer': 'heroShimmer 3s ease-in-out infinite alternate',
       },
       keyframes: {
         slideUp: {
@@ -65,6 +69,26 @@ const config: Config = {
         cardFadeUp: {
           '0%': { opacity: '0', transform: 'translateY(16px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        journeyTimelineLine: {
+          '0%': { transform: 'scaleY(0)' },
+          '100%': { transform: 'scaleY(1)' },
+        },
+        journeyTimelineDot: {
+          '0%': { opacity: '0' },
+          '100%': { opacity: '1' },
+        },
+        reserveBarShrink: {
+          '0%': { transform: 'scaleX(1)' },
+          '100%': { transform: 'scaleX(0)' },
+        },
+        heroShimmer: {
+          '0%': {
+            transform: 'translateX(-130%) translateY(-50%)',
+          },
+          '100%': {
+            transform: 'translateX(340%) translateY(-50%)',
+          },
         },
       },
     },
