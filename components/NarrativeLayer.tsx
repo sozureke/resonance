@@ -33,7 +33,7 @@ export default function NarrativeLayer({ model, visible }: Props) {
           ref={pathRef}
           d={NARRATIVE_PATH_D}
           fill="none"
-          stroke="rgba(255, 97, 45, 0.18)"
+          stroke="rgba(255, 26, 138, 0.14)"
           strokeWidth="0.42"
           strokeLinecap="round"
         />
@@ -49,8 +49,9 @@ export default function NarrativeLayer({ model, visible }: Props) {
         />
         <defs>
           <linearGradient id="narrativePathGradient" x1="10%" y1="10%" x2="92%" y2="72%">
-            <stop offset="0%" stopColor="#ff4d2e" />
-            <stop offset="55%" stopColor="#ff1a8a" />
+            <stop offset="0%" stopColor="#ff1a8a" />
+            <stop offset="45%" stopColor="#ff6b9d" />
+            <stop offset="78%" stopColor="#ff8a5c" />
             <stop offset="100%" stopColor="#ffd8ea" />
           </linearGradient>
         </defs>

@@ -1,14 +1,25 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Journey, JourneyConcert } from '@/types/concert'
+import JourneyRefinePad from './JourneyRefinePad'
 
 interface Props {
   journey: Journey
+  onRefineSubmit?: (payload: {
+    x: number
+    y: number
+    excludeIds: string[]
+  }) => Promise<void>
+  onRefineOpenChange?: (open: boolean) => void
+  onRefineDragChange?: (dragging: boolean) => void
+  onRefineXyChange?: (xy: { x: number; y: number }) => void
   /** Starts the parent’s sequential close animation (Back, Escape, or auto-dismiss after reserve). */
   onRequestExit: () => void
   /** 0 = visible; 1 = fade inner content; 2+ = slide panel off-screen (owned by parent timing). */
   closeAnimStep: number
+  /** Fires once when the “saved” confirmation state begins (after tapping reserve). */
+  onReserveComplete?: () => void
 }
 
 const FRAUNCES = "'Fraunces', Georgia, serif"
@@ -107,7 +118,7 @@ function PosterCard({
       >
         <span
           aria-hidden
-          className="absolute left-[-24px] top-1/2 h-[6px] w-[6px] -translate-y-1/2 rounded-full bg-[#ff4d2e] opacity-0 motion-reduce:opacity-100 motion-safe:animate-journey-timeline-dot"
+          className="absolute left-[-24px] top-1/2 h-[6px] w-[6px] -translate-y-1/2 rounded-full bg-gradient-to-br from-[#ff1a8a] to-[#ff8a65] opacity-0 motion-reduce:opacity-100 motion-safe:animate-journey-timeline-dot"
           style={{
             animationDelay: `${TIMELINE_LINE_MS + index * TIMELINE_DOT_STAGGER_MS}ms`,
             animationFillMode: 'forwards',
@@ -194,21 +205,89 @@ function PosterCard({
 
 export default function JourneyResult({
   journey,
+  onRefineSubmit,
+  onRefineOpenChange,
+  onRefineDragChange,
+  onRefineXyChange,
   onRequestExit,
   closeAnimStep,
+  onReserveComplete,
 }: Props) {
   const [reservePhase, setReservePhase] = useState<'idle' | 'pending' | 'done'>('idle')
+  const [showJourneyLayer, setShowJourneyLayer] = useState(true)
+  const [showRefineLayer, setShowRefineLayer] = useState(false)
+  const [refineGenerating, setRefineGenerating] = useState(false)
   const autoDismissRef = useRef<number | null>(null)
+  const reserveDoneNotifiedRef = useRef(false)
 
   const isClosing = closeAnimStep > 0
 
+  const handleCancelRefine = useCallback(() => {
+    if (refineGenerating) return
+    setShowRefineLayer(false)
+    onRefineOpenChange?.(false)
+    window.setTimeout(() => setShowJourneyLayer(true), 300)
+  }, [refineGenerating, onRefineOpenChange])
+
+  const handleTryAgain = () => {
+    if (isClosing || !onRefineSubmit || refineGenerating) return
+    setShowJourneyLayer(false)
+    window.setTimeout(() => {
+      setShowRefineLayer(true)
+      onRefineOpenChange?.(true)
+    }, 300)
+  }
+
+  const handleRefineGenerate = async (xy: { x: number; y: number }) => {
+    if (!onRefineSubmit || refineGenerating) return
+    setRefineGenerating(true)
+    try {
+      await onRefineSubmit({
+        x: xy.x,
+        y: xy.y,
+        excludeIds: journey.concerts.map((c) => c.id),
+      })
+      setShowRefineLayer(false)
+      onRefineOpenChange?.(false)
+      window.setTimeout(() => setShowJourneyLayer(true), 300)
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setRefineGenerating(false)
+    }
+  }
+
+  useEffect(() => {
+    if (isClosing && showRefineLayer) {
+      setShowRefineLayer(false)
+      onRefineOpenChange?.(false)
+      setShowJourneyLayer(true)
+    }
+  }, [isClosing, onRefineOpenChange, showRefineLayer])
+
+  useEffect(() => {
+    if (reservePhase === 'done' && !reserveDoneNotifiedRef.current) {
+      reserveDoneNotifiedRef.current = true
+      onReserveComplete?.()
+    }
+    if (reservePhase === 'idle') {
+      reserveDoneNotifiedRef.current = false
+    }
+  }, [reservePhase, onReserveComplete])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !isClosing) onRequestExit()
+      if (e.key !== 'Escape' || isClosing) return
+      if (showRefineLayer) {
+        e.preventDefault()
+        handleCancelRefine()
+        return
+      }
+      onRequestExit()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onRequestExit, isClosing])
+  }, [onRequestExit, isClosing, showRefineLayer, handleCancelRefine])
 
   useEffect(() => {
     if (reservePhase !== 'done' || isClosing) return
@@ -257,10 +336,15 @@ export default function JourneyResult({
       `}
     >
       <div
-        className={`flex h-full min-h-0 flex-col transition-opacity duration-[380ms] ease-out ${
+        className={`relative flex h-full min-h-0 flex-col transition-opacity duration-[380ms] ease-out ${
           innerFade ? 'pointer-events-none opacity-0' : 'opacity-100'
         }`}
       >
+        <div
+          className={`absolute inset-0 z-[1] flex min-h-0 flex-col transition-opacity duration-300 ease-out ${
+            showJourneyLayer ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'
+          }`}
+        >
         <header className="relative flex-shrink-0 px-10 pb-6 pt-10">
           <button
             type="button"
@@ -321,39 +405,68 @@ export default function JourneyResult({
                   : 'translate-y-0 opacity-100'
               }`}
             >
-              <button
-                type="button"
-                onClick={handleReserve}
-                disabled={reservePhase !== 'idle' || isClosing}
-                className="
-                  w-full rounded-none uppercase
-                  border border-solid border-[rgba(255,255,255,0.2)]
-                  bg-transparent text-[rgba(255,255,255,0.7)]
-                  transition-all duration-300 ease-[ease]
-                  hover:border-[#ff1a8a] hover:bg-[rgba(255,26,138,0.06)] hover:text-white
-                  disabled:pointer-events-none
-                  disabled:hover:border-[rgba(255,255,255,0.2)] disabled:hover:bg-transparent disabled:hover:text-[rgba(255,255,255,0.7)]
-                "
-                style={{
-                  height: '48px',
-                  fontFamily: MONO,
-                  fontSize: '11px',
-                  fontWeight: 400,
-                  letterSpacing: '0.2em',
-                }}
+              <div
+                className={`flex gap-3 ${onRefineSubmit ? 'flex-col-reverse sm:flex-row sm:items-stretch' : 'flex-col'}`}
               >
-                {reservePhase === 'pending' ? (
-                  <span className="inline-flex items-center justify-center gap-3">
-                    <span
-                      className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/25 border-t-white"
-                      aria-hidden
-                    />
-                    <span>Hold on…</span>
-                  </span>
-                ) : (
-                  'Reserve this journey'
+                <button
+                  type="button"
+                  onClick={handleReserve}
+                  disabled={reservePhase !== 'idle' || isClosing}
+                  className={`
+                    w-full rounded-none uppercase sm:flex-1
+                    border border-solid border-[rgba(255,255,255,0.2)]
+                    bg-transparent text-[rgba(255,255,255,0.85)]
+                    transition-all duration-300 ease-[ease]
+                    hover:border-[#ff1a8a] hover:bg-[rgba(255,26,138,0.06)] hover:text-white
+                    disabled:pointer-events-none
+                    disabled:hover:border-[rgba(255,255,255,0.2)] disabled:hover:bg-transparent disabled:hover:text-[rgba(255,255,255,0.7)]
+                  `}
+                  style={{
+                    minHeight: '52px',
+                    fontFamily: MONO,
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    letterSpacing: '0.22em',
+                  }}
+                >
+                  {reservePhase === 'pending' ? (
+                    <span className="inline-flex items-center justify-center gap-3">
+                      <span
+                        className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/25 border-t-white"
+                        aria-hidden
+                      />
+                      <span>Hold on…</span>
+                    </span>
+                  ) : (
+                    'Reserve this journey'
+                  )}
+                </button>
+                {onRefineSubmit && (
+                  <button
+                    type="button"
+                    onClick={handleTryAgain}
+                    disabled={isClosing || refineGenerating || !showJourneyLayer}
+                    className="
+                      w-full rounded-none uppercase
+                      border border-solid border-[rgba(255,255,255,0.22)]
+                      bg-[rgba(255,255,255,0.03)] text-[rgba(255,255,255,0.78)]
+                      transition-all duration-300 ease-[ease]
+                      hover:border-[#ff1a8a] hover:bg-[rgba(255,26,138,0.08)] hover:text-white
+                      disabled:pointer-events-none disabled:opacity-35
+                      sm:w-auto sm:flex-none sm:basis-[34%] sm:px-4
+                    "
+                    style={{
+                      minHeight: '48px',
+                      fontFamily: MONO,
+                      fontSize: '10px',
+                      fontWeight: 500,
+                      letterSpacing: '0.18em',
+                    }}
+                  >
+                    Try again
+                  </button>
                 )}
-              </button>
+              </div>
             </div>
 
             <div
@@ -380,11 +493,45 @@ export default function JourneyResult({
               <div className="mt-4 h-[2px] w-full overflow-hidden rounded-full bg-white/[0.08]">
                 <div
                   key={reservePhase === 'done' ? 'bar-on' : 'bar-off'}
-                  className="h-[2px] w-full origin-left bg-[#ff4d2e] motion-safe:animate-reserve-bar-shrink motion-reduce:w-0"
+                  className="h-[2px] w-full origin-left motion-safe:animate-reserve-bar-shrink motion-reduce:w-0"
+                  style={{
+                    background:
+                      'linear-gradient(90deg, #ff1a8a 0%, #ff4a9a 22%, #ff6b9d 48%, #ff8a5c 78%, #ffb38a 100%)',
+                  }}
                 />
               </div>
             </div>
           </div>
+        </div>
+        </div>
+
+        <div
+          className={`absolute inset-0 z-[2] flex min-h-0 flex-col bg-[#0a0a0b] transition-opacity duration-300 ease-out ${
+            showRefineLayer ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'
+          }`}
+        >
+          <button
+            type="button"
+            onClick={handleCancelRefine}
+            disabled={refineGenerating}
+            className="absolute right-8 top-6 z-10 uppercase text-[rgba(255,255,255,0.45)] transition-colors hover:text-white disabled:opacity-40"
+            style={{
+              fontFamily: MONO,
+              fontSize: '11px',
+              letterSpacing: '0.15em',
+            }}
+          >
+            ← Journey
+          </button>
+          {onRefineSubmit && (
+            <JourneyRefinePad
+              previousTitle={journey.journey_title}
+              onGenerate={(xy) => void handleRefineGenerate(xy)}
+              generating={refineGenerating}
+              onXyChange={onRefineXyChange}
+              onDragChange={onRefineDragChange}
+            />
+          )}
         </div>
       </div>
     </aside>

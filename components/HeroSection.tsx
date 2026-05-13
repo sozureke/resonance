@@ -4,6 +4,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import JourneyResult from './JourneyResult'
 import { Journey } from '@/types/concert'
+import {
+  DISCOVERY_QUERY_INVALID_MESSAGE,
+  discoveryQueryErrorMessage,
+  validateDiscoveryQuery,
+} from '@/lib/queryGuard'
 
 const ParticleSphere = dynamic(() => import('./ParticleSphere'), {
   ssr: false,
@@ -12,9 +17,7 @@ const ParticleSphere = dynamic(() => import('./ParticleSphere'), {
 
 type JourneyRevealPhase = 'idle' | 'hold' | 'sphere_exit' | 'panel_only' | 'split'
 
-/** Beat after the API returns: full-screen sphere stays up so the moment can land before collapse. */
 const PRE_COLLAPSE_HOLD_MS = 3600
-
 const OPEN_SPHERE_SHRINK_MS = 580
 const PANEL_SETTLE_MS = 620
 const SPHERE_REENTER_DELAY_MS = 550
@@ -22,8 +25,11 @@ const SPHERE_REENTER_DELAY_MS = 550
 const EXIT_SIMULT_MS = 380
 const EXIT_BLACK_HOLD_MS = 1750
 const POST_INTRO_HERO_MS = 2600
-/** If WebGL never finishes the intro (edge case), still reveal the shell so the page is usable. */
 const SURFACE_REVEAL_FALLBACK_MS = 8000
+
+const DEFAULT_HERO_LABEL = 'What would you like to discover?'
+const SAVED_HERO_LABEL = 'Your journey is saved. Explore more?'
+const POETIC_FALLBACK_LABEL = 'Ready to discover something new?'
 
 interface HeroSectionProps {
   onBelowFoldHiddenChange?: (hidden: boolean) => void
@@ -49,6 +55,23 @@ export default function HeroSection({
   const [surfaceRevealReady, setSurfaceRevealReady] = useState(false)
   const surfaceRevealOpenedRef = useRef(false)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  const [heroLabelText, setHeroLabelText] = useState(DEFAULT_HERO_LABEL)
+  const [heroLabelOpacity, setHeroLabelOpacity] = useState(1)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [lastSubmittedQuery, setLastSubmittedQuery] = useState('')
+  const [refinePanelOpen, setRefinePanelOpen] = useState(false)
+  const [refineDrag, setRefineDrag] = useState(false)
+  const [refineXy, setRefineXy] = useState({ x: 0.5, y: 0.5 })
+
+  type PendingLabel =
+    | { kind: 'none' }
+    | { kind: 'saved' }
+    | { kind: 'poetic'; title: string }
+    | { kind: 'fallback_poetic' }
+  const pendingLabelRef = useRef<PendingLabel>({ kind: 'none' })
+  const pendingAfterSaveExitRef = useRef(false)
+
   const revealTimersRef = useRef<number[]>([])
   const exitTimersRef = useRef<number[]>([])
   const postIntroTimerRef = useRef<number | null>(null)
@@ -105,6 +128,18 @@ export default function HeroSection({
     setSurfaceRevealReady(true)
   }, [])
 
+  const transitionToLabel = useCallback((next: string) => {
+    setHeroLabelOpacity(0)
+    window.setTimeout(() => {
+      setHeroLabelText(next)
+      window.setTimeout(() => setHeroLabelOpacity(1), 20)
+    }, 300)
+  }, [])
+
+  const onReserveComplete = useCallback(() => {
+    pendingAfterSaveExitRef.current = true
+  }, [])
+
   useEffect(() => {
     if (typeof window === 'undefined') return
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -119,6 +154,17 @@ export default function HeroSection({
   const handleSubmit = async () => {
     const q = query.trim()
     if (!q || loading || !surfaceRevealReady || revealPhase !== 'idle') return
+
+    const guard = validateDiscoveryQuery(q)
+    if (!guard.ok) {
+      setSubmitError(discoveryQueryErrorMessage(guard.reason))
+      return
+    }
+
+    pendingLabelRef.current = { kind: 'none' }
+    setHeroLabelText(DEFAULT_HERO_LABEL)
+    setHeroLabelOpacity(1)
+    setSubmitError(null)
     setSearchPulse((n) => n + 1)
     setLoading(true)
     clearRevealTimers()
@@ -140,8 +186,25 @@ export default function HeroSection({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: q }),
       })
-      if (!res.ok) throw new Error('API error')
+      if (!res.ok) {
+        let errText = DISCOVERY_QUERY_INVALID_MESSAGE
+        try {
+          const j = (await res.json()) as { error?: string }
+          if (typeof j.error === 'string' && j.error.trim()) {
+            errText = j.error.trim()
+          }
+        } catch {
+          /* keep default */
+        }
+        setSubmitError(errText)
+        setLoading(false)
+        setRevealPhase('idle')
+        setQueryLoadStart(null)
+        setQueryLoadEnd(null)
+        return
+      }
       const data: Journey = await res.json()
+      setLastSubmittedQuery(q)
       setQueryLoadEnd(performance.now())
       setJourney(data)
       setLoading(false)
@@ -172,6 +235,7 @@ export default function HeroSection({
       }
     } catch (err) {
       console.error(err)
+      setSubmitError(DISCOVERY_QUERY_INVALID_MESSAGE)
       setLoading(false)
       setRevealPhase('idle')
       setQueryLoadStart(null)
@@ -183,9 +247,69 @@ export default function HeroSection({
     if (e.key === 'Enter') handleSubmit()
   }
 
+  const handleRefineSubmit = useCallback(
+    async (payload: { x: number; y: number; excludeIds: string[] }) => {
+      const q = lastSubmittedQuery.trim()
+      if (!q) throw new Error('Missing original query')
+      setLoading(true)
+      setQueryLoadStart(performance.now())
+      setQueryLoadEnd(null)
+      try {
+        const res = await fetch('/api/recommend', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query: q,
+            feedback: {
+              x: payload.x,
+              y: payload.y,
+              excludeIds: payload.excludeIds,
+            },
+          }),
+        })
+        if (!res.ok) {
+          let errText = DISCOVERY_QUERY_INVALID_MESSAGE
+          try {
+            const j = (await res.json()) as { error?: string }
+            if (typeof j.error === 'string' && j.error.trim()) errText = j.error.trim()
+          } catch {
+            /* ignore */
+          }
+          throw new Error(errText)
+        }
+        const data = (await res.json()) as Journey
+        setQueryLoadEnd(performance.now())
+        setJourney(data)
+        setLoading(false)
+        setRevealPhase('split')
+        setShowResult(true)
+        setCloseAnimStep(0)
+        setIntroReplayKey((k) => k + 1)
+      } catch (e) {
+        setLoading(false)
+        setQueryLoadStart(null)
+        setQueryLoadEnd(null)
+        throw e
+      }
+    },
+    [lastSubmittedQuery],
+  )
+
   const beginJourneyExit = useCallback(() => {
     if (exitActiveRef.current || closeAnimStep > 0) return
     exitActiveRef.current = true
+
+    const wantSaved = pendingAfterSaveExitRef.current
+    pendingAfterSaveExitRef.current = false
+    const jt = journey?.journey_title?.trim() ?? ''
+    if (wantSaved) {
+      pendingLabelRef.current = { kind: 'saved' }
+    } else if (jt) {
+      pendingLabelRef.current = { kind: 'poetic', title: jt }
+    } else {
+      pendingLabelRef.current = { kind: 'fallback_poetic' }
+    }
+
     clearRevealTimers()
     clearExitTimers()
 
@@ -211,6 +335,8 @@ export default function HeroSection({
       setQueryLoadEnd(null)
       setCloseAnimStep(0)
       setIntroReplayKey((k) => k + 1)
+      setRefinePanelOpen(false)
+      setRefineDrag(false)
       setPostExitIntroBlock(true)
       clearPostIntroTimer()
       postIntroTimerRef.current = window.setTimeout(() => {
@@ -219,7 +345,7 @@ export default function HeroSection({
         postIntroTimerRef.current = null
       }, POST_INTRO_HERO_MS)
     }, tAfterBlack)
-  }, [clearExitTimers, clearPostIntroTimer, clearRevealTimers])
+  }, [clearExitTimers, clearPostIntroTimer, clearRevealTimers, journey])
 
   const splitLayout =
     showResult && revealPhase !== 'sphere_exit' && closeAnimStep < 2
@@ -229,10 +355,17 @@ export default function HeroSection({
 
   const exitingCollapse = closeAnimStep >= 1 && closeAnimStep <= 2
 
+  const refineDimsSphere =
+    showResult && closeAnimStep < 2 && refinePanelOpen
+
   const sphereOpacityClass =
     revealPhase === 'panel_only'
       ? 'opacity-0 pointer-events-none'
-      : 'opacity-100'
+      : refineDimsSphere
+        ? refineDrag
+          ? 'opacity-[0.7]'
+          : 'opacity-40'
+        : 'opacity-100'
 
   const sphereScaleClass = exitingCollapse
     ? 'scale-0'
@@ -243,11 +376,13 @@ export default function HeroSection({
         : 'scale-100'
 
   const transitionSphere =
-    revealPhase === 'sphere_exit'
-      ? 'transition-[opacity,transform] duration-[580ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
-      : exitingCollapse
-        ? 'transition-[opacity,transform] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
-        : 'transition-[opacity,transform] duration-[1100ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
+    refineDimsSphere
+      ? 'transition-[opacity,transform] duration-300 ease-out'
+      : revealPhase === 'sphere_exit'
+        ? 'transition-[opacity,transform] duration-[580ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
+        : exitingCollapse
+          ? 'transition-[opacity,transform] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
+          : 'transition-[opacity,transform] duration-[1100ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
 
   const layoutShellClass =
     showResult && closeAnimStep >= 2
@@ -269,6 +404,46 @@ export default function HeroSection({
     revealPhase === 'idle' &&
     !showResult &&
     (isInputFocused || query.trim().length > 0)
+
+  useEffect(() => {
+    if (!surfaceRevealReady || !showHeroChrome) return
+    const p = pendingLabelRef.current
+    if (p.kind === 'none') return
+    pendingLabelRef.current = { kind: 'none' }
+
+    if (p.kind === 'saved') {
+      transitionToLabel(SAVED_HERO_LABEL)
+      return
+    }
+    if (p.kind === 'fallback_poetic') {
+      transitionToLabel(POETIC_FALLBACK_LABEL)
+      return
+    }
+    if (p.kind === 'poetic') {
+      setHeroLabelOpacity(0)
+      const title = p.title
+      window.setTimeout(() => {
+        void (async () => {
+          let q = POETIC_FALLBACK_LABEL
+          try {
+            const res = await fetch('/api/hero-question', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ journeyTitle: title }),
+            })
+            const data = (await res.json()) as { question?: string }
+            if (typeof data.question === 'string' && data.question.trim()) {
+              q = data.question.trim()
+            }
+          } catch {
+            q = POETIC_FALLBACK_LABEL
+          }
+          setHeroLabelText(q)
+          window.setTimeout(() => setHeroLabelOpacity(1), 20)
+        })()
+      }, 300)
+    }
+  }, [surfaceRevealReady, showHeroChrome, transitionToLabel])
 
   return (
     <section className="relative w-full h-screen min-h-0 bg-black overflow-hidden">
@@ -292,6 +467,10 @@ export default function HeroSection({
             }
             queryLoadStart={queryLoadStart}
             queryLoadEnd={queryLoadEnd}
+            journeyPanelOpen={showResult && closeAnimStep < 2}
+            xyPadOpen={refinePanelOpen}
+            xyNorm={refineXy}
+            xyDragging={refineDrag}
             onIntroComplete={openSurfaceAfterIntro}
           />
         </div>
@@ -313,9 +492,10 @@ export default function HeroSection({
           <div className="flex w-full max-w-[480px] flex-col items-center text-center">
             <label
               htmlFor="hero-journey-query"
-              className="mb-3 block max-w-[40rem] font-fraunces text-[24px] leading-[1.15] italic text-[rgba(255,255,255,0.5)] [letter-spacing:0.03em]"
+              className="mb-3 block min-h-[1.4em] max-w-[40rem] font-fraunces text-[24px] leading-[1.15] italic text-[rgba(255,255,255,0.5)] [letter-spacing:0.03em] transition-opacity duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
+              style={{ opacity: heroLabelOpacity }}
             >
-              What would you like to discover?
+              {heroLabelText}
             </label>
 
             <input
@@ -323,7 +503,10 @@ export default function HeroSection({
               ref={inputRef}
               type="text"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value)
+                setSubmitError(null)
+              }}
               onKeyDown={handleKeyDown}
               onFocus={() => setIsInputFocused(true)}
               onBlur={() => setIsInputFocused(false)}
@@ -357,6 +540,15 @@ export default function HeroSection({
                 press enter to discover
               </p>
             </div>
+
+            {submitError && (
+              <p
+                role="alert"
+                className="mt-4 max-w-[480px] text-center font-fraunces text-[13px] italic leading-snug text-[#ff6b9d]"
+              >
+                {submitError}
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -364,8 +556,13 @@ export default function HeroSection({
       {showResult && journey && (
         <JourneyResult
           journey={journey}
+          onRefineSubmit={handleRefineSubmit}
+          onRefineOpenChange={setRefinePanelOpen}
+          onRefineDragChange={setRefineDrag}
+          onRefineXyChange={setRefineXy}
           onRequestExit={beginJourneyExit}
           closeAnimStep={closeAnimStep}
+          onReserveComplete={onReserveComplete}
         />
       )}
 

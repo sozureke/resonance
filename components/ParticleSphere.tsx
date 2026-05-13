@@ -11,6 +11,12 @@ interface Props {
   opacityBoost?: number
   queryLoadStart?: number | null
   queryLoadEnd?: number | null
+  /** Journey results panel visible — sphere dims and steps back. */
+  journeyPanelOpen?: boolean
+  /** Refine XY pad open — drives soft accent tint on particles. */
+  xyPadOpen?: boolean
+  xyNorm?: { x: number; y: number }
+  xyDragging?: boolean
   /** Fired once per intro pass when the opening animation reaches INTRO_DURATION (use to reveal the rest of the page). */
   onIntroComplete?: () => void
 }
@@ -38,16 +44,15 @@ function makeSoftDot(): THREE.Texture {
   return tex
 }
 
+
 function pixelRatioForWidth(cssWidth: number): number {
   const dpr = window.devicePixelRatio || 1
-  if (cssWidth >= 1800) return Math.min(dpr, 2.5)
-  if (cssWidth >= 1200) return Math.min(dpr, 2)
-  return Math.min(dpr, 1.75)
+  const cap = cssWidth >= 1800 ? 1.75 : cssWidth >= 1100 ? 1.85 : 1.9
+  return Math.min(dpr, cap)
 }
 
-/** Particle shell radius; ×0.9 vs legacy 2.2 so the sphere fits the viewport with margin. */
 const RADIUS = 2.2 * 0.9
-const COUNT = 48_000
+const COUNT = 36_000
 const INTRO_DURATION = 2.45
 
 function introFromElapsed(elapsed: number) {
@@ -155,7 +160,11 @@ uniform float uSubmitRingPhase;
 uniform float uSubmitRingAmp;
 uniform float uOpacityBoost;
 uniform float uLoadAlphaMul;
+uniform float uResultOpacityMul;
 uniform float uIdleOpacityScale;
+uniform vec3 uStateW;
+uniform vec3 uXYCurrentAccent;
+uniform float uXYTintMix;
 
 in vec3 position;
 in float aKind;
@@ -167,21 +176,6 @@ out float vAlpha;
 out float vTw;
 
 ${NOISE_GLSL}
-
-vec3 palette(float x) {
-  x = clamp(x, 0.0, 1.0);
-  vec3 voidC = vec3(0.039215686, 0.0, 0.0);
-  vec3 ember = vec3(0.72, 0.11, 0.06);
-  vec3 orange = vec3(1.0, 0.36, 0.14);
-  vec3 warm = vec3(1.0, 0.5, 0.18);
-  vec3 pink = vec3(1.0, 0.102, 0.541);
-  vec3 glow = vec3(1.0, 0.86, 0.9);
-  if (x < 0.18) return mix(voidC, ember, x / 0.18);
-  if (x < 0.46) return mix(ember, orange, (x - 0.18) / 0.28);
-  if (x < 0.74) return mix(orange, warm, (x - 0.46) / 0.28);
-  if (x < 0.9) return mix(warm, pink, (x - 0.74) / 0.16);
-  return mix(pink, glow, (x - 0.9) / 0.1);
-}
 
 float craterMul(vec3 dir, float kind, float capMul) {
   if (uCraterStrength < 0.001 || length(uCraterDir) < 0.01) return 1.0;
@@ -314,11 +308,8 @@ void main() {
     colorT = clamp(colorT + drift * 0.2 + aSz * 0.04 * sin(uTime * 0.19 + dir.x * 3.0), 0.0, 0.92);
   }
 
-  // Warm gradient layer: more orange at rest, smoother pink reveal on listening.
-  float warmGrad = 0.5 + 0.5 * sin(dir.y * 2.3 + dir.x * 1.6 + dir.z * 0.9 + uTime * 0.16);
-  float orangeBias = mix(0.2, 0.06, uFocus) * warmGrad;
-  float focusLift = 0.12 * uFocus;
-  colorT = clamp(colorT * (0.78 - 0.05 * uFocus) + orangeBias + focusLift, 0.01, 0.9);
+  // Cool luminance ramp for noise-driven brightness (no warm orange cast).
+  colorT = clamp(colorT * (0.84 - 0.06 * uFocus), 0.01, 0.9);
 
   float znWide = snoise(dir * 0.52 + vec3(uTime * 0.024, -uTime * 0.018, uTb * 0.11));
   float znFine = snoise(dir * 1.32 + vec3(6.0, -4.0, 2.0) + vec3(uTa * 0.07, uTime * 0.042, uTime * 0.028));
@@ -345,12 +336,34 @@ void main() {
   float beat = 0.945 + 0.09 * (0.5 + 0.5 * sin(uTime * 0.355) * sin(uTime * 0.431));
   brightness *= beat;
 
-  vec3 baseHue = palette(colorT);
-  vec3 priorityHue = vec3(1.0, 0.102, 0.541) * 0.5 + vec3(1.0) * 0.3 + vec3(1.0, 0.36, 0.14) * 0.2;
-  vec3 finalHue = mix(baseHue, priorityHue, 0.78);
-  vColor = finalHue * brightness * aSz;
+  float yCl = dir.y;
+  float shellRim = length(vec2(dir.x, dir.z));
+  float zn = zoneMix;
+  float wTop = smoothstep(0.16, 0.94, yCl) * (0.34 + 0.66 * zn);
+  float wEdge = pow(clamp(shellRim, 0.0, 1.0), 1.1)
+    * (0.44 + 0.56 * (1.0 - smoothstep(-0.35, 0.68, yCl)));
+  wEdge = clamp(wEdge, 0.0, 1.0);
+  float wMid = max(1e-3, 1.0 - wTop - wEdge * 0.92);
+  float wSum = wTop + wMid + wEdge + 1e-4;
+  wTop /= wSum;
+  wMid /= wSum;
+  wEdge /= wSum;
+
+  vec3 COL_TEAL = vec3(0.0, 0.784314, 0.705882);
+  vec3 COL_TEAL_HOT = vec3(0.392157, 0.941176, 0.862745);
+  vec3 COL_PINK = vec3(1.0, 0.101961, 0.541176);
+
+  vec3 C_idle = wTop * vec3(1.0) + wMid * COL_TEAL + wEdge * COL_PINK;
+  vec3 C_load = wTop * vec3(1.14) + wMid * COL_TEAL_HOT + wEdge * (COL_PINK * 1.12);
+  C_load = min(C_load, vec3(1.35));
+  vec3 C_result = wTop * vec3(0.42) + wMid * COL_TEAL + wEdge * (COL_PINK * 0.52);
+  vec3 mixedTone = uStateW.x * C_idle + uStateW.y * C_load + uStateW.z * C_result;
+  float xm = clamp(uXYTintMix, 0.0, 1.0);
+  mixedTone = mix(mixedTone, uXYCurrentAccent, xm * 0.42);
+
+  vColor = mixedTone * brightness * aSz;
   float alphaCore = min(0.95, 0.55 + brightness * 0.35) * tw;
-  vAlpha = clamp(alphaCore * uOpacityBoost * uLoadAlphaMul * uIdleOpacityScale, 0.0, 1.0);
+  vAlpha = clamp(alphaCore * uOpacityBoost * uLoadAlphaMul * uResultOpacityMul * uIdleOpacityScale, 0.0, 1.0);
   vTw = tw;
 
   vec4 mvPosition = modelViewMatrix * vec4(localPos, 1.0);
@@ -360,7 +373,7 @@ void main() {
   float szW = pow(clamp(aSz, 0.15, 1.65), 0.42);
   float twW = mix(1.0, tw, 0.22);
   float ps = uPointScale * szNoise * szW * twW * (34.0 / max(dist, 0.55));
-  gl_PointSize = clamp(ps, 1.0, 56.0);
+  gl_PointSize = clamp(ps, 1.0, 44.0);
 }
 `
 
@@ -385,13 +398,10 @@ void main() {
 }
 `
 
-const LOADING_SPEED_MUL = 1.08
-const LOADING_PULSE_PERIOD_MS = 5600
-const LOADING_SPEED_RETURN_MS = 1000
-/** Opacity breathing while API runs: very slow, low amplitude (ambient “thinking”). */
-function loadingOpacityPulse01(elapsedSinceStartMs: number) {
-  return 0.97 + 0.03 * Math.sin((elapsedSinceStartMs / LOADING_PULSE_PERIOD_MS) * Math.PI * 2)
-}
+const LOADING_SPEED_TARGET = 1.5
+/** Loading UI pulse on opacity: 0.85 → 1.0 over 1s (charge). */
+const LOADING_PULSE_PERIOD_MS = 1000
+const STATE_BLEND_LERP = 0.02
 
 export default function ParticleSphere({
   isListening,
@@ -401,6 +411,10 @@ export default function ParticleSphere({
   opacityBoost = 1,
   queryLoadStart = null,
   queryLoadEnd = null,
+  journeyPanelOpen = false,
+  xyPadOpen = false,
+  xyNorm = { x: 0.5, y: 0.5 },
+  xyDragging = false,
   onIntroComplete,
 }: Props) {
   const onIntroCompleteRef = useRef(onIntroComplete)
@@ -415,6 +429,11 @@ export default function ParticleSphere({
     opacityBoost,
     queryLoadStart,
     queryLoadEnd,
+    journeyPanelOpen,
+    xyPadOpen,
+    xyNormX: xyNorm.x,
+    xyNormY: xyNorm.y,
+    xyDragging,
   })
   const calmBlendRef = useRef(0)
 
@@ -427,6 +446,11 @@ export default function ParticleSphere({
       opacityBoost,
       queryLoadStart,
       queryLoadEnd,
+      journeyPanelOpen,
+      xyPadOpen,
+      xyNormX: xyNorm.x,
+      xyNormY: xyNorm.y,
+      xyDragging,
     }
   }, [
     isListening,
@@ -436,6 +460,11 @@ export default function ParticleSphere({
     opacityBoost,
     queryLoadStart,
     queryLoadEnd,
+    journeyPanelOpen,
+    xyPadOpen,
+    xyNorm.x,
+    xyNorm.y,
+    xyDragging,
   ])
 
   useEffect(() => {
@@ -561,7 +590,11 @@ export default function ParticleSphere({
         uSubmitRingAmp: { value: 0 },
         uOpacityBoost: { value: 1 },
         uLoadAlphaMul: { value: 1 },
+        uResultOpacityMul: { value: 1 },
         uIdleOpacityScale: { value: 2 },
+        uStateW: { value: new THREE.Vector3(1, 0, 0) },
+        uXYCurrentAccent: { value: new THREE.Vector3(1, 1, 1) },
+        uXYTintMix: { value: 0 },
         uWhiteBlend: { value: 0 },
         uMap: { value: tex },
       },
@@ -697,6 +730,13 @@ export default function ParticleSphere({
 
     let intensitySmooth = 0
 
+    let wIdle = 1
+    let wLoad = 0
+    let wRes = 0
+
+    const xyAccentSmooth = new THREE.Vector3(1, 1, 1)
+    let xyMixSmooth = 0
+
     const animate = () => {
       if (cancelled) return
       frameId = requestAnimationFrame(animate)
@@ -751,31 +791,40 @@ export default function ParticleSphere({
       const qe = stateRef.current.queryLoadEnd ?? null
 
       const isFetching = qs != null && qe == null
+      const panelOpen = stateRef.current.journeyPanelOpen ?? false
 
-      let loadAlphaMul = 1
-      let simSpeedMul = 1
-      /** Softer than full idle (2) so the fetch state does not look like a hard dim + flash. */
-      const idleOpacityScale = isFetching ? 1.55 : 2
-
-      if (qs != null) {
-        if (isFetching) {
-          simSpeedMul = LOADING_SPEED_MUL
-          loadAlphaMul = loadingOpacityPulse01(wall - qs)
-        } else {
-          const sinceEnd = wall - qe!
-          if (sinceEnd < LOADING_SPEED_RETURN_MS) {
-            simSpeedMul = THREE.MathUtils.lerp(
-              LOADING_SPEED_MUL,
-              1,
-              Math.min(1, sinceEnd / LOADING_SPEED_RETURN_MS),
-            )
-          }
-        }
+      let tIdle = 0
+      let tLoad = 0
+      let tRes = 0
+      if (isFetching) {
+        tLoad = 1
+      } else if (panelOpen) {
+        tRes = 1
+      } else {
+        tIdle = 1
       }
 
+      wIdle += (tIdle - wIdle) * STATE_BLEND_LERP
+      wLoad += (tLoad - wLoad) * STATE_BLEND_LERP
+      wRes += (tRes - wRes) * STATE_BLEND_LERP
+      const ws = wIdle + wLoad + wRes + 1e-6
+      wIdle /= ws
+      wLoad /= ws
+      wRes /= ws
+
+      mat.uniforms.uStateW.value.set(wIdle, wLoad, wRes)
+
+      const chargePulse =
+        0.925 + 0.075 * Math.sin((wall / LOADING_PULSE_PERIOD_MS) * Math.PI * 2)
+      const loadAlphaMul = THREE.MathUtils.lerp(1, chargePulse, wLoad)
+      const resultOpacityMul = THREE.MathUtils.lerp(1, 0.6, wRes)
+
       mat.uniforms.uLoadAlphaMul.value = loadAlphaMul
-      mat.uniforms.uIdleOpacityScale.value = idleOpacityScale
+      mat.uniforms.uResultOpacityMul.value = resultOpacityMul
+      mat.uniforms.uIdleOpacityScale.value = 2
       mat.uniforms.uWhiteBlend.value = 0
+
+      let simSpeedMul = 1 + (LOADING_SPEED_TARGET - 1) * wLoad
 
       const speedTarget = 0.8 + intens * 1.2
       speedSmooth += (speedTarget - speedSmooth) * 0.05
@@ -822,15 +871,23 @@ export default function ParticleSphere({
       const heart = 0.5 + 0.5 * Math.sin(simT * 0.55)
       const lumaBreathe = 0.9 + 0.22 * out - 0.1 * Math.pow(inward, 0.6)
       const lumaSlow = 0.86 + 0.28 * heart
-      const glintAmp = isFetching ? 0.035 : 0.12
-      const glintFast = isFetching ? 0.62 : 2.05
-      const glintSlow = isFetching ? 0.16 : 0.4
+      const glintAmp = THREE.MathUtils.lerp(0.12, 0.035, wLoad)
+      const glintFast = THREE.MathUtils.lerp(2.05, 0.62, wLoad)
+      const glintSlow = THREE.MathUtils.lerp(0.4, 0.16, wLoad)
       const lumaGlint =
         1 +
         glintAmp * Math.sin(simT * glintFast) * (0.5 + 0.5 * Math.sin(simT * glintSlow))
       const lumaIntens = 1 + 0.4 * Math.min(1, Math.pow(intensitySmooth, 0.85))
       const lumaFocus = 1 + 0.04 * cEase
-      const gain = BRIGHTNESS_MASTER * lumaBreathe * lumaSlow * lumaGlint * lumaIntens * lumaFocus
+      const chargeGain = 1 + 0.14 * wLoad
+      const gain =
+        BRIGHTNESS_MASTER *
+        lumaBreathe *
+        lumaSlow *
+        lumaGlint *
+        lumaIntens *
+        lumaFocus *
+        chargeGain
 
       mat.uniforms.uTime.value = t
       mat.uniforms.uTa.value = simT * 0.12
@@ -843,6 +900,25 @@ export default function ParticleSphere({
         0,
         stateRef.current.opacityBoost ?? 1,
       )
+
+      const padOpen = stateRef.current.xyPadOpen ?? false
+      const nx = Math.min(1, Math.max(0, stateRef.current.xyNormX ?? 0.5))
+      const ny = Math.min(1, Math.max(0, stateRef.current.xyNormY ?? 0.5))
+      const drg = stateRef.current.xyDragging ?? false
+      const tlA = new THREE.Vector3(1, 0.102, 0.541)
+      const trA = new THREE.Vector3(0.784, 0.302, 1.0)
+      const blA = new THREE.Vector3(1, 0.302, 0.18)
+      const brA = new THREE.Vector3(1, 0.102, 0.353)
+      const topA = tlA.clone().lerp(trA, nx)
+      const botA = blA.clone().lerp(brA, nx)
+      const targA = topA.lerp(botA, ny)
+      const neutralA = new THREE.Vector3(1, 1, 1)
+      xyAccentSmooth.lerp(padOpen ? targA : neutralA, 0.04)
+      const mixGoal = padOpen ? (drg ? 0.5 : 0.38) : 0
+      xyMixSmooth += (mixGoal - xyMixSmooth) * 0.04
+      mat.uniforms.uXYCurrentAccent.value.copy(xyAccentSmooth)
+      mat.uniforms.uXYTintMix.value = xyMixSmooth
+
       mat.uniforms.uCraterStrength.value = craterStrength
       if (craterStrength > 0.001 && hasCrater) {
         mat.uniforms.uCraterDir.value.copy(craterDirLocal)

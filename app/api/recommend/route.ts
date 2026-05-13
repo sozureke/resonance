@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Journey, JourneyConcert } from '@/types/concert'
+import {
+  DISCOVERY_QUERY_INVALID_MESSAGE,
+  discoveryQueryErrorMessage,
+  validateDiscoveryQuery,
+} from '@/lib/queryGuard'
 
 export const dynamic = 'force-dynamic'
 
@@ -50,34 +55,75 @@ function bridgesFromArc(arc?: string): string[] {
 
 export async function POST(req: NextRequest) {
   try {
-    const { query, exclude_ids } = (await req.json()) as {
+    const body = (await req.json()) as {
       query?: string
       exclude_ids?: unknown
+      feedback?: {
+        x?: number
+        y?: number
+        excludeIds?: unknown
+      }
     }
+    const { query, exclude_ids, feedback } = body
     const trimmed = query?.trim()
     if (!trimmed) {
       return NextResponse.json({ error: 'query is required' }, { status: 400 })
     }
 
-    const excludes = Array.isArray(exclude_ids)
+    const guard = validateDiscoveryQuery(trimmed)
+    if (!guard.ok) {
+      return NextResponse.json(
+        { error: discoveryQueryErrorMessage(guard.reason) },
+        { status: 400 },
+      )
+    }
+
+    const excludesTop = Array.isArray(exclude_ids)
       ? exclude_ids.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
-      : undefined
+      : []
+    const excludesFb =
+      feedback && Array.isArray(feedback.excludeIds)
+        ? feedback.excludeIds.filter(
+            (x): x is string => typeof x === 'string' && x.trim().length > 0,
+          )
+        : []
+    const merged = Array.from(new Set([...excludesTop, ...excludesFb]))
+
+    let feedback_x: number | undefined
+    let feedback_y: number | undefined
+    if (feedback && typeof feedback.x === 'number' && Number.isFinite(feedback.x)) {
+      feedback_x = Math.min(1, Math.max(0, feedback.x))
+    }
+    if (feedback && typeof feedback.y === 'number' && Number.isFinite(feedback.y)) {
+      feedback_y = Math.min(1, Math.max(0, feedback.y))
+    }
 
     const agentRes = await fetch(`${BACKEND_URL}/agent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: trimmed,
-        /** Ask the agent for English copy when supported (titles / arc aligned with the UI). */
         locale: 'en',
         language: 'en',
-        ...(excludes?.length ? { exclude_ids: excludes } : {}),
+        ...(merged.length ? { exclude_ids: merged } : {}),
+        ...(feedback_x !== undefined ? { feedback_x } : {}),
+        ...(feedback_y !== undefined ? { feedback_y } : {}),
       }),
       cache: 'no-store',
     })
     if (!agentRes.ok) {
       const raw = await agentRes.text().catch(() => '')
       let msg = `Backend agent failed (${agentRes.status})`
+      if (agentRes.status === 400) {
+        try {
+          const j = JSON.parse(raw) as { detail?: string }
+          if (typeof j?.detail === 'string' && j.detail.trim()) {
+            return NextResponse.json({ error: j.detail.trim() }, { status: 400 })
+          }
+        } catch {
+          /* fall through */
+        }
+      }
       try {
         const j = JSON.parse(raw) as { detail?: string }
         if (typeof j?.detail === 'string') msg = j.detail
