@@ -23,6 +23,13 @@ export default function Home() {
     scrollRef.current?.scrollTo({ left: 0, behavior: 'smooth' })
   }, [activeTag])
 
+  /** Journey / search mode locks the page to the hero viewport; reset scroll so the sphere does not appear to “jump” after the strip collapses. */
+  useEffect(() => {
+    if (hideBelowHero) {
+      window.scrollTo({ top: 0, behavior: 'auto' })
+    }
+  }, [hideBelowHero])
+
   useEffect(() => {
     fetch('/api/concerts')
       .then((r) => r.json())
@@ -48,15 +55,28 @@ export default function Home() {
   }
 
   return (
-    <main className="bg-black min-h-screen">
-      <HeroSection onBelowFoldHiddenChange={setHideBelowHero} />
+    <main
+      className={`bg-black flex flex-col ${
+        hideBelowHero
+          ? 'h-screen max-h-screen min-h-0 overflow-hidden'
+          : 'min-h-screen'
+      }`}
+    >
+      {/* Hero owns the viewport while below-the-fold is hidden so the sphere does not reflow when the strip collapses. */}
+      <div
+        className={
+          hideBelowHero ? 'relative min-h-0 flex-1 flex flex-col' : 'shrink-0'
+        }
+      >
+        <HeroSection onBelowFoldHiddenChange={setHideBelowHero} />
+      </div>
 
-      {/* Concert grid section — fades out while a search / journey is active */}
+      {/* Concert grid — padding only when visible; collapsed track is flex-none + h-0 so it reserves zero space */}
       <section
-        className={`bg-black py-16 px-4 md:px-8 transition-[opacity,transform,max-height] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+        className={`bg-black px-4 md:px-8 shrink-0 transition-opacity duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
           hideBelowHero
-            ? 'opacity-0 max-h-0 overflow-hidden py-0 pointer-events-none -translate-y-3'
-            : 'opacity-100 max-h-[5000px] translate-y-0'
+            ? 'h-0 min-h-0 max-h-0 overflow-hidden py-0 m-0 opacity-0 pointer-events-none border-0'
+            : 'py-16 opacity-100 overflow-visible'
         }`}
         aria-hidden={hideBelowHero}
       >
@@ -155,16 +175,6 @@ export default function Home() {
           )}
         </div>
       </section>
-
-      {/* Footer strip */}
-      <footer className="border-t border-white/10 py-8 px-4 md:px-8">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
-          <p className="text-white/30 text-xs"
-            style={{ fontFamily: "'DM Sans', sans-serif" }}>
-            © 2026 Philharmonie Luxembourg · Resonance is an AI prototype
-          </p>
-        </div>
-      </footer>
     </main>
   )
 }

@@ -10,7 +10,10 @@ const ParticleSphere = dynamic(() => import('./ParticleSphere'), {
   loading: () => <div className="w-full h-full bg-black" />,
 })
 
-type JourneyRevealPhase = 'idle' | 'sphere_exit' | 'panel_only' | 'split'
+type JourneyRevealPhase = 'idle' | 'hold' | 'sphere_exit' | 'panel_only' | 'split'
+
+/** Beat after the API returns: full-screen sphere stays up so the moment can land before collapse. */
+const PRE_COLLAPSE_HOLD_MS = 3600
 
 const OPEN_SPHERE_SHRINK_MS = 580
 const PANEL_SETTLE_MS = 620
@@ -19,6 +22,8 @@ const SPHERE_REENTER_DELAY_MS = 550
 const EXIT_SIMULT_MS = 380
 const EXIT_BLACK_HOLD_MS = 1750
 const POST_INTRO_HERO_MS = 2600
+/** If WebGL never finishes the intro (edge case), still reveal the shell so the page is usable. */
+const SURFACE_REVEAL_FALLBACK_MS = 8000
 
 interface HeroSectionProps {
   onBelowFoldHiddenChange?: (hidden: boolean) => void
@@ -40,6 +45,9 @@ export default function HeroSection({
   const [closeAnimStep, setCloseAnimStep] = useState(0)
   const [exitBlackout, setExitBlackout] = useState(false)
   const [postExitIntroBlock, setPostExitIntroBlock] = useState(false)
+  /** After the particle intro completes, fade in input + let the page show the concerts strip. */
+  const [surfaceRevealReady, setSurfaceRevealReady] = useState(false)
+  const surfaceRevealOpenedRef = useRef(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const revealTimersRef = useRef<number[]>([])
   const exitTimersRef = useRef<number[]>([])
@@ -61,6 +69,7 @@ export default function HeroSection({
   }, [])
 
   const belowFoldHidden =
+    !surfaceRevealReady ||
     loading ||
     postExitIntroBlock ||
     exitBlackout ||
@@ -77,7 +86,7 @@ export default function HeroSection({
     return () => clearExitTimers()
   }, [clearExitTimers])
 
-  const intensity = loading ? 0.9 : 0
+  const intensity = loading ? 0.38 : 0
 
   const clearPostIntroTimer = useCallback(() => {
     if (postIntroTimerRef.current != null) {
@@ -90,9 +99,26 @@ export default function HeroSection({
     return () => clearPostIntroTimer()
   }, [clearPostIntroTimer])
 
+  const openSurfaceAfterIntro = useCallback(() => {
+    if (surfaceRevealOpenedRef.current) return
+    surfaceRevealOpenedRef.current = true
+    setSurfaceRevealReady(true)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    if (mq.matches) openSurfaceAfterIntro()
+  }, [openSurfaceAfterIntro])
+
+  useEffect(() => {
+    const id = window.setTimeout(openSurfaceAfterIntro, SURFACE_REVEAL_FALLBACK_MS)
+    return () => window.clearTimeout(id)
+  }, [openSurfaceAfterIntro])
+
   const handleSubmit = async () => {
     const q = query.trim()
-    if (!q || loading) return
+    if (!q || loading || !surfaceRevealReady || revealPhase !== 'idle') return
     setSearchPulse((n) => n + 1)
     setLoading(true)
     clearRevealTimers()
@@ -120,19 +146,30 @@ export default function HeroSection({
       setJourney(data)
       setLoading(false)
 
-      setRevealPhase('sphere_exit')
+      setRevealPhase('hold')
 
-      const t1 = window.setTimeout(() => {
-        setShowResult(true)
-        setRevealPhase('panel_only')
-      }, OPEN_SPHERE_SHRINK_MS)
-      revealTimersRef.current.push(t1)
+      const scheduleRevealSequence = () => {
+        setRevealPhase('sphere_exit')
 
-      const t2 = window.setTimeout(() => {
-        setRevealPhase('split')
-        setIntroReplayKey((k) => k + 1)
-      }, OPEN_SPHERE_SHRINK_MS + PANEL_SETTLE_MS + SPHERE_REENTER_DELAY_MS)
-      revealTimersRef.current.push(t2)
+        const t1 = window.setTimeout(() => {
+          setShowResult(true)
+          setRevealPhase('panel_only')
+        }, OPEN_SPHERE_SHRINK_MS)
+        revealTimersRef.current.push(t1)
+
+        const t2 = window.setTimeout(() => {
+          setRevealPhase('split')
+          setIntroReplayKey((k) => k + 1)
+        }, OPEN_SPHERE_SHRINK_MS + PANEL_SETTLE_MS + SPHERE_REENTER_DELAY_MS)
+        revealTimersRef.current.push(t2)
+      }
+
+      if (PRE_COLLAPSE_HOLD_MS > 0) {
+        const holdId = window.setTimeout(scheduleRevealSequence, PRE_COLLAPSE_HOLD_MS)
+        revealTimersRef.current.push(holdId)
+      } else {
+        scheduleRevealSequence()
+      }
     } catch (err) {
       console.error(err)
       setLoading(false)
@@ -218,6 +255,7 @@ export default function HeroSection({
       : 'transition-all duration-[600ms] ease-out'
 
   const showHeroChrome =
+    surfaceRevealReady &&
     !loading &&
     !postExitIntroBlock &&
     !exitBlackout &&
@@ -225,6 +263,7 @@ export default function HeroSection({
     !showResult
 
   const isListening =
+    surfaceRevealReady &&
     !loading &&
     !postExitIntroBlock &&
     revealPhase === 'idle' &&
@@ -232,7 +271,7 @@ export default function HeroSection({
     (isInputFocused || query.trim().length > 0)
 
   return (
-    <section className="relative w-full h-screen bg-black overflow-hidden">
+    <section className="relative w-full h-screen min-h-0 bg-black overflow-hidden">
       <div
         className={`absolute left-0 top-0 ease-out ${
           splitLayout
@@ -253,16 +292,17 @@ export default function HeroSection({
             }
             queryLoadStart={queryLoadStart}
             queryLoadEnd={queryLoadEnd}
+            onIntroComplete={openSurfaceAfterIntro}
           />
         </div>
 
         <div
-          className={`absolute inset-0 flex flex-col items-center justify-end px-6 z-10 transition-all ease-[cubic-bezier(0.22,1,0.36,1)] ${
-            postExitIntroBlock ? 'duration-700' : 'duration-[580ms]'
+          className={`absolute inset-0 z-10 flex flex-col items-center justify-end px-6 transition-opacity ease-[cubic-bezier(0.4,0,0.2,1)] will-change-[opacity] ${
+            postExitIntroBlock ? 'duration-[900ms]' : 'duration-[650ms]'
           } ${
             showHeroChrome
-              ? 'opacity-100 translate-y-0 pointer-events-auto'
-              : 'opacity-0 translate-y-4 pointer-events-none'
+              ? 'opacity-100 pointer-events-auto'
+              : 'opacity-0 pointer-events-none'
           }`}
           style={{
             paddingBottom: '212px',
@@ -292,7 +332,7 @@ export default function HeroSection({
               className="
                 w-full max-w-[480px] bg-transparent px-0 py-1.5 text-center
                 font-fraunces text-[16px] italic leading-relaxed tracking-[-0.01em] text-white caret-[#ff1a8a] outline-none
-                placeholder:text-[rgba(255,255,255,0.28)] placeholder:transition-opacity
+                placeholder:text-[rgba(255,255,255,0.28)] placeholder:transition-opacity placeholder:duration-300
                 focus:placeholder:opacity-0
               "
             />
@@ -306,21 +346,17 @@ export default function HeroSection({
               />
             </div>
 
-            <p
-              className={`mt-6 font-mono text-[10px] uppercase tracking-[0.15em] transition-colors duration-300 ${
-                isInputFocused
-                  ? 'text-[rgba(255,255,255,0.45)]'
-                  : 'text-[rgba(255,255,255,0.25)]'
-              }`}
-            >
-              press enter to discover
-            </p>
-
-            {loading && (
-              <p className="mt-6 text-white/50 text-xs tracking-widest uppercase animate-pulse">
-                Composing your journey...
+            <div className="mt-6 flex min-h-[36px] w-full max-w-[480px] items-center justify-center">
+              <p
+                className={`text-center font-mono text-[10px] uppercase tracking-[0.15em] transition-opacity duration-300 ${
+                  isInputFocused
+                    ? 'text-[rgba(255,255,255,0.45)]'
+                    : 'text-[rgba(255,255,255,0.25)]'
+                }`}
+              >
+                press enter to discover
               </p>
-            )}
+            </div>
           </div>
         </div>
       </div>

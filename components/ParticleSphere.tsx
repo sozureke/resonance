@@ -11,6 +11,8 @@ interface Props {
   opacityBoost?: number
   queryLoadStart?: number | null
   queryLoadEnd?: number | null
+  /** Fired once per intro pass when the opening animation reaches INTRO_DURATION (use to reveal the rest of the page). */
+  onIntroComplete?: () => void
 }
 
 function makeSoftDot(): THREE.Texture {
@@ -383,12 +385,12 @@ void main() {
 }
 `
 
-const LOADING_SPEED_MUL = 1.5
-const LOADING_PULSE_PERIOD_MS = 2000
+const LOADING_SPEED_MUL = 1.08
+const LOADING_PULSE_PERIOD_MS = 5600
 const LOADING_SPEED_RETURN_MS = 1000
-/** Opacity pulse while API in progress: 0.85 → 1.0 → 0.85 over 2s (subtle). */
+/** Opacity breathing while API runs: very slow, low amplitude (ambient “thinking”). */
 function loadingOpacityPulse01(elapsedSinceStartMs: number) {
-  return 0.925 + 0.075 * Math.sin((elapsedSinceStartMs / LOADING_PULSE_PERIOD_MS) * Math.PI * 2)
+  return 0.97 + 0.03 * Math.sin((elapsedSinceStartMs / LOADING_PULSE_PERIOD_MS) * Math.PI * 2)
 }
 
 export default function ParticleSphere({
@@ -399,7 +401,11 @@ export default function ParticleSphere({
   opacityBoost = 1,
   queryLoadStart = null,
   queryLoadEnd = null,
+  onIntroComplete,
 }: Props) {
+  const onIntroCompleteRef = useRef(onIntroComplete)
+  onIntroCompleteRef.current = onIntroComplete
+
   const mountRef = useRef<HTMLDivElement>(null)
   const stateRef = useRef({
     isListening,
@@ -589,6 +595,7 @@ export default function ParticleSphere({
 
     const submitPulseRef = { version: 0, t0: -1e6 }
     const introReplayRef = { version: 0, t0: 0 }
+    let introEndNotified = false
     const gyroRaw = { gx: 0, gy: 0, ok: false }
     const gyroSm = { x: 0, y: 0 }
     let gyroMix = 0
@@ -688,6 +695,8 @@ export default function ParticleSphere({
     let simTime = 0
     let prevT = 0
 
+    let intensitySmooth = 0
+
     const animate = () => {
       if (cancelled) return
       frameId = requestAnimationFrame(animate)
@@ -707,8 +716,17 @@ export default function ParticleSphere({
       if (irk !== introReplayRef.version) {
         introReplayRef.version = irk
         introReplayRef.t0 = t
+        introEndNotified = false
       }
       const introElapsed = t - introReplayRef.t0
+      if (!introEndNotified && introElapsed >= INTRO_DURATION) {
+        introEndNotified = true
+        try {
+          onIntroCompleteRef.current?.()
+        } catch {
+          /* ignore */
+        }
+      }
       const intro = introFromElapsed(introElapsed)
       mat.uniforms.uIntroScale.value = intro.uIntroScale
       mat.uniforms.uIntroLift.value = intro.uIntroLift
@@ -736,7 +754,8 @@ export default function ParticleSphere({
 
       let loadAlphaMul = 1
       let simSpeedMul = 1
-      const idleOpacityScale = isFetching ? 1 : 2
+      /** Softer than full idle (2) so the fetch state does not look like a hard dim + flash. */
+      const idleOpacityScale = isFetching ? 1.55 : 2
 
       if (qs != null) {
         if (isFetching) {
@@ -793,6 +812,9 @@ export default function ParticleSphere({
       const craterPulse = 0.94 + 0.06 * Math.sin(t * 0.95 + craterBlend * 0.8)
       const craterStrength = craterBlend * craterBlend * craterPulse
 
+      const targetIntens = THREE.MathUtils.clamp(intens, 0, 1)
+      intensitySmooth += (targetIntens - intensitySmooth) * 0.035
+
       const ph = simT * 0.92
       const sinP = Math.sin(ph)
       const inward = Math.max(0, sinP)
@@ -800,8 +822,13 @@ export default function ParticleSphere({
       const heart = 0.5 + 0.5 * Math.sin(simT * 0.55)
       const lumaBreathe = 0.9 + 0.22 * out - 0.1 * Math.pow(inward, 0.6)
       const lumaSlow = 0.86 + 0.28 * heart
-      const lumaGlint = 1 + 0.12 * Math.sin(simT * 2.05) * (0.5 + 0.5 * Math.sin(simT * 0.4))
-      const lumaIntens = 1 + 0.4 * Math.min(1, Math.pow(intens, 0.85))
+      const glintAmp = isFetching ? 0.035 : 0.12
+      const glintFast = isFetching ? 0.62 : 2.05
+      const glintSlow = isFetching ? 0.16 : 0.4
+      const lumaGlint =
+        1 +
+        glintAmp * Math.sin(simT * glintFast) * (0.5 + 0.5 * Math.sin(simT * glintSlow))
+      const lumaIntens = 1 + 0.4 * Math.min(1, Math.pow(intensitySmooth, 0.85))
       const lumaFocus = 1 + 0.04 * cEase
       const gain = BRIGHTNESS_MASTER * lumaBreathe * lumaSlow * lumaGlint * lumaIntens * lumaFocus
 
@@ -810,7 +837,7 @@ export default function ParticleSphere({
       mat.uniforms.uTb.value = simT * 0.085
       mat.uniforms.uPh.value = ph
       mat.uniforms.uFocus.value = cEase
-      mat.uniforms.uIntensity.value = THREE.MathUtils.clamp(intens, 0, 1)
+      mat.uniforms.uIntensity.value = intensitySmooth
       mat.uniforms.uGain.value = gain
       mat.uniforms.uOpacityBoost.value = Math.max(
         0,

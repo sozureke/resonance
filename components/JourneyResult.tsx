@@ -13,7 +13,6 @@ interface Props {
 
 const FRAUNCES = "'Fraunces', Georgia, serif"
 const MONO = "'JetBrains Mono', monospace"
-const INTER_TIGHT = "'Inter Tight', system-ui, sans-serif"
 
 const TIMELINE_LINE_MS = 600
 const TIMELINE_DOT_STAGGER_MS = 150
@@ -314,7 +313,7 @@ export default function JourneyResult({
             minHeight: reservePhase === 'done' ? '152px' : undefined,
           }}
         >
-          <div className="relative min-h-[52px]">
+          <div className="relative min-h-[48px]">
             <div
               className={`transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
                 reservePhase === 'done'
@@ -327,23 +326,28 @@ export default function JourneyResult({
                 onClick={handleReserve}
                 disabled={reservePhase !== 'idle' || isClosing}
                 className="
-                  w-full uppercase
-                  bg-white text-black
-                  hover:bg-[#ff4d2e] hover:text-white
-                  disabled:pointer-events-none disabled:opacity-90
-                  transition-[background-color,color,transform] duration-[400ms] ease-[cubic-bezier(0.22,1,0.36,1)]
+                  w-full rounded-none uppercase
+                  border border-solid border-[rgba(255,255,255,0.2)]
+                  bg-transparent text-[rgba(255,255,255,0.7)]
+                  transition-all duration-300 ease-[ease]
+                  hover:border-[#ff1a8a] hover:bg-[rgba(255,26,138,0.06)] hover:text-white
+                  disabled:pointer-events-none
+                  disabled:hover:border-[rgba(255,255,255,0.2)] disabled:hover:bg-transparent disabled:hover:text-[rgba(255,255,255,0.7)]
                 "
                 style={{
-                  height: '52px',
-                  fontFamily: INTER_TIGHT,
-                  fontSize: '13px',
-                  fontWeight: 600,
-                  letterSpacing: '0.15em',
+                  height: '48px',
+                  fontFamily: MONO,
+                  fontSize: '11px',
+                  fontWeight: 400,
+                  letterSpacing: '0.2em',
                 }}
               >
                 {reservePhase === 'pending' ? (
                   <span className="inline-flex items-center justify-center gap-3">
-                    <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-black/35 border-t-black" />
+                    <span
+                      className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/25 border-t-white"
+                      aria-hidden
+                    />
                     <span>Hold on…</span>
                   </span>
                 ) : (
