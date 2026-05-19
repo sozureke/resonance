@@ -1,5 +1,6 @@
 import fs from 'fs'
 import path from 'path'
+import { resolveRoomDisplay } from '@/lib/rooms'
 import { Concert } from '@/types/concert'
 
 function parseConcerts(): Concert[] {
@@ -25,12 +26,15 @@ function parseConcerts(): Concert[] {
   return lines.slice(1).map((line) => {
     // Handle potential quoted fields with semicolons inside
     const cols = line.split(';')
+    const title = cols[idx.title]?.trim() ?? ''
+    const subtitle = cols[idx.subtitle]?.trim() ?? ''
+    const roomRaw = cols[idx.room]?.trim() ?? ''
     return {
       id: cols[idx.id]?.trim() ?? '',
       date_start: cols[idx.date_start]?.trim() ?? '',
-      title: cols[idx.title]?.trim() ?? '',
-      subtitle: cols[idx.subtitle]?.trim() ?? '',
-      room: cols[idx.room]?.trim() ?? '',
+      title,
+      subtitle,
+      room: resolveRoomDisplay({ room: roomRaw, title, subtitle }),
       tag1: cols[idx.tag1]?.trim() ?? '',
       tag2: cols[idx.tag2]?.trim() ?? '',
       genre: cols[idx.genre]?.trim() ?? '',

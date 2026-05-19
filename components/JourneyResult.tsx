@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { resolveRoomDisplay } from '@/lib/rooms'
 import { Journey, JourneyConcert } from '@/types/concert'
 import JourneyRefinePad from './JourneyRefinePad'
 
@@ -68,6 +69,11 @@ function PosterCard({
   const tags = [concert.tag1, concert.tag2].filter(
     (t): t is string => Boolean(t && t.trim().length > 0),
   )
+  const roomLabel = resolveRoomDisplay({
+    room: concert.room,
+    title: concert.title,
+    subtitle: concert.subtitle,
+  })
 
   return (
     <article
@@ -90,19 +96,17 @@ function PosterCard({
         >
           {formatPosterDate(concert.date_start)}
         </span>
-        {concert.room && (
-          <span
-            className="uppercase"
-            style={{
-              fontFamily: MONO,
-              fontSize: '10px',
-              color: 'rgba(255,255,255,0.4)',
-              letterSpacing: '0.15em',
-            }}
-          >
-            {concert.room}
-          </span>
-        )}
+        <span
+          className="uppercase"
+          style={{
+            fontFamily: MONO,
+            fontSize: '10px',
+            color: 'rgba(255,255,255,0.4)',
+            letterSpacing: '0.15em',
+          }}
+        >
+          {roomLabel}
+        </span>
       </div>
 
       {/* Concert title + timeline node */}

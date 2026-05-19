@@ -1,3 +1,4 @@
+import { resolveRoomDisplay } from '@/lib/rooms'
 import { Concert } from '@/types/concert'
 
 interface Props {
@@ -23,14 +24,6 @@ function formatYear(iso: string) {
   }
 }
 
-/** Rooms unresolved in export (internal reference only). */
-function displayRoom(room: string | undefined): string {
-  const t = room?.trim() ?? ''
-  if (!t) return ''
-  if (/^[0-9a-f:]+$/i.test(t.replace(/\s/g, ''))) return ''
-  return t
-}
-
 function compactTags(concert: Concert): string[] {
   const source = [concert.tag1, concert.genre, concert.tag2]
     .filter((t): t is string => Boolean(t) && t !== '0')
@@ -41,7 +34,11 @@ function compactTags(concert: Concert): string[] {
 
 export default function ConcertCard({ concert }: Props) {
   const tags = compactTags(concert)
-  const roomText = displayRoom(concert.room) || 'Philharmonie Luxembourg'
+  const roomText = resolveRoomDisplay({
+    room: concert.room,
+    title: concert.title,
+    subtitle: concert.subtitle,
+  })
   const tagsTitle = tags.length > 0 ? tags.join(', ') : undefined
 
   return (

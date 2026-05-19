@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { resolveRoomDisplay } from '@/lib/rooms'
 import { Journey, JourneyConcert } from '@/types/concert'
 import {
   DISCOVERY_QUERY_INVALID_MESSAGE,
@@ -154,12 +155,14 @@ export async function POST(req: NextRequest) {
         })
         if (!detailRes.ok) return null
         const c = (await detailRes.json()) as BackendConcert
+        const title = c.title ?? ''
+        const subtitle = c.subtitle ?? ''
         const item: JourneyConcert = {
           id: c.id,
           date_start: c.date_iso ?? '',
-          title: c.title ?? '',
-          subtitle: c.subtitle ?? '',
-          room: c.room ?? '',
+          title,
+          subtitle,
+          room: resolveRoomDisplay({ room: c.room ?? '', title, subtitle }),
           tag1: c.tag1 ?? '',
           tag2: c.tag2 ?? '',
           genre: c.genre ?? '',

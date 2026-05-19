@@ -20,7 +20,27 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
+from catalog_fit import intent_fit_score
+from concert_utils import is_kids_concert
+from intent_llm import StructuredIntent, fallback_intent, parse_user_intent
+from journey_contract import (
+    gap_spacing_note,
+    validate_journey_contract,
+    venue_variety_note,
+)
+from journey_llm import choose_journey_with_llm, llm_enabled, log_llm_candidate_pool
+from journey_pool import prepare_journey_pool
+from journey_repair import repair_journey_quartet
+from query_guard_llm import (
+    llm_query_guard_enabled,
+    llm_validate_discovery_query,
+    looks_like_family_discovery,
+)
+from room_resolve import normalize_concert_room
+
+_backend_dir = Path(__file__).resolve().parent
+load_dotenv(_backend_dir / ".env")
+load_dotenv(_backend_dir.parent / ".env", override=False)
 
 LOG = logging.getLogger("resonance")
 logging.basicConfig(level=logging.INFO)
@@ -55,6 +75,7 @@ Narrative rules for the arc:
 - This is a **trajectory from familiar to discovery**: step 1 should feel like a safe, welcoming entry to the user's wish; step 4 should feel like a stretch / opening into something new but still connected.
 - Each sentence should show **movement** from the previous step (different mood, scale, era, or setting) — not four similar blurbs.
 - Do **not** claim two steps are the same experience; honour the fact that venues, dates, and programs differ.
+- **Historical accuracy**: never label Romantic or modern repertoire as Baroque (e.g. Verdi, Mahler are not Baroque). Describe each concert using its actual composers and period from the prompt.
 
 Respond with ONLY valid JSON (no markdown):
 {"message": "…", "arc": "Four English sentences. Separate with spaces; each should end with . ! or ?"}
@@ -192,6 +213,12 @@ def _looks_like_gibberish(s: str) -> bool:
     return False
 
 
+def _looks_plausible_discovery_phrase(msg: str) -> bool:
+    """Lenient fallback when LLM guard is unavailable."""
+    tokens = [t for t in re.findall(r"[a-zA-Z\u00C0-\u024f'-]{2,}", msg)]
+    return len(tokens) >= 1 and len(msg.strip()) >= 3
+
+
 def validate_discovery_query(text: str) -> None:
     msg = (text or "").strip()
     if len(msg) < 2 or len(msg) > 2000:
@@ -205,10 +232,29 @@ def validate_discovery_query(text: str) -> None:
     for rx in _REGEX_DENY:
         if rx.search(msg):
             raise HTTPException(status_code=400, detail=QUERY_POLICY_DETAIL)
-    if not _has_musical_discovery_intent(msg):
-        raise HTTPException(status_code=400, detail=QUERY_INVALID_DETAIL)
     if _looks_like_gibberish(msg):
         raise HTTPException(status_code=400, detail=QUERY_INVALID_DETAIL)
+
+    if _has_musical_discovery_intent(msg) or looks_like_family_discovery(msg):
+        return
+
+    if llm_query_guard_enabled():
+        try:
+            reason = llm_validate_discovery_query(msg, call_llm=call_openrouter)
+            if reason:
+                raise HTTPException(status_code=400, detail=reason)
+            return
+        except HTTPException:
+            raise
+        except Exception as e:
+            LOG.warning("LLM query guard error (%s); lenient fallback", e)
+            if _looks_plausible_discovery_phrase(msg):
+                return
+
+    if _looks_plausible_discovery_phrase(msg):
+        return
+
+    raise HTTPException(status_code=400, detail=QUERY_INVALID_DETAIL)
 
 
 def concert_month_key(c: dict[str, str]) -> str:
@@ -231,11 +277,22 @@ def parse_concert_datetime(c: dict[str, str]) -> datetime | None:
         return None
 
 
+def reference_today() -> datetime:
+    """Optional fixed 'today' for demos (e.g. 2026-05-01 so May–July season is bookable)."""
+    raw = os.environ.get("DEMO_REFERENCE_DATE", "").strip()
+    if raw:
+        try:
+            return datetime.fromisoformat(raw[:10])
+        except ValueError:
+            LOG.warning("Invalid DEMO_REFERENCE_DATE=%r; using real clock.", raw)
+    return datetime.now()
+
+
 def concert_is_upcoming(c: dict[str, str]) -> bool:
     dt = parse_concert_datetime(c)
     if dt is None:
         return False
-    return dt.date() >= datetime.now().date()
+    return dt.date() >= reference_today().date()
 
 
 def tickets_seem_available(c: dict[str, str]) -> bool:
@@ -358,6 +415,7 @@ def load_concerts_from_csv(path: Path) -> list[dict[str, str]]:
                 continue
             row[attr] = (cols[col_i] or "").strip()
         if row.get("id") and row.get("title"):
+            normalize_concert_room(row)
             concerts.append(row)
     return concerts
 
@@ -486,10 +544,118 @@ def is_small_room(c: dict[str, str]) -> bool:
     return venue_kind(c.get("room", "")) in ("chambre", "decouverte")
 
 
+def _concert_tag_blob(c: dict[str, str]) -> str:
+    return " ".join(
+        [
+            c.get("tag1", ""),
+            c.get("tag2", ""),
+            c.get("genre", ""),
+            c.get("title", ""),
+            c.get("subtitle", ""),
+        ]
+    ).lower()
+
+
+def concert_xy_alignment(
+    c: dict[str, str],
+    feedback_x: float | None,
+    feedback_y: float | None,
+) -> float:
+    """0–1 fit to XY pad: x familiar→adventurous, y intimate→epic."""
+    scores: list[float] = []
+
+    if feedback_x is not None:
+        blob = _concert_tag_blob(c)
+        era = era_hint(c)
+        familiar = 0.0
+        if "classical hits" in blob or era in ("classical", "romantic", "baroque"):
+            familiar += 0.55
+        if "mood-booster" in blob and "outside-the-box" not in blob:
+            familiar += 0.25
+        adventurous = 0.0
+        if "outside-the-box" in blob or "thought-provoking" in blob:
+            adventurous += 0.5
+        if era == "modern" or "contemporary" in blob or "experimental" in blob:
+            adventurous += 0.45
+        scores.append(familiar * (1.0 - feedback_x) + adventurous * feedback_x)
+
+    if feedback_y is not None:
+        vk = venue_kind(c.get("room", ""))
+        blob = _concert_tag_blob(c)
+        intimate = 0.0
+        epic = 0.0
+        if vk in ("chambre", "decouverte"):
+            intimate = 1.0
+        elif vk == "foyer":
+            intimate = 0.72
+        elif vk == "grand_auditorium":
+            epic = 1.0
+        else:
+            intimate = 0.42
+            epic = 0.38
+        if "orchestra" in blob or " epic" in f" {blob}":
+            epic = max(epic, 0.85)
+        if vk != "grand_auditorium":
+            intimate = max(intimate, 0.15)
+        scores.append(intimate * (1.0 - feedback_y) + epic * feedback_y)
+
+    if not scores:
+        return 0.0
+    return min(1.0, sum(scores) / len(scores))
+
+
+def apply_catalog_similarity_bias(
+    sims: np.ndarray,
+    concerts: list[dict[str, str]],
+    intent: StructuredIntent,
+) -> None:
+    if not intent.must_emphasize and not intent.avoid:
+        return
+    weight = float(os.environ.get("CATALOG_SIM_BIAS_WEIGHT", "0.28"))
+    for i, c in enumerate(concerts):
+        fit = intent_fit_score(c, intent.must_emphasize, intent.avoid)
+        sims[i] += weight * (fit - 0.5)
+
+
+def apply_xy_similarity_bias(
+    sims: np.ndarray,
+    concerts: list[dict[str, str]],
+    feedback_x: float | None,
+    feedback_y: float | None,
+) -> None:
+    """In-place boost/penalize cosine scores from pad position (refine)."""
+    if feedback_x is None and feedback_y is None:
+        return
+    weight = float(os.environ.get("XY_SIM_BIAS_WEIGHT", "0.14"))
+    for i, c in enumerate(concerts):
+        fit = concert_xy_alignment(c, feedback_x, feedback_y)
+        sims[i] += weight * (fit - 0.5)
+
+
+def xy_query_suffix(feedback_x: float | None, feedback_y: float | None) -> str:
+    if feedback_x is None or feedback_y is None:
+        return ""
+    chunks: list[str] = []
+    if feedback_x < 0.35:
+        chunks.append("familiar beloved classical repertoire")
+    elif feedback_x > 0.65:
+        chunks.append("adventurous contemporary experimental discovery")
+    if feedback_y < 0.35:
+        chunks.append("intimate chamber music small hall")
+    elif feedback_y > 0.65:
+        chunks.append("epic orchestral grand scale")
+    if not chunks:
+        chunks.append("balanced familiar and adventurous intimate and epic")
+    return " Refine mood: " + ", ".join(chunks) + "."
+
+
 def score_quadruple(
     chrono: list[str],
     rank_by_id: dict[str, int],
     c_by_id: dict[str, dict[str, str]],
+    feedback_x: float | None = None,
+    feedback_y: float | None = None,
+    intent: StructuredIntent | None = None,
 ) -> float:
     ranks = [rank_by_id[cid] for cid in chrono]
     months = {concert_month_key(c_by_id[cid]) for cid in chrono}
@@ -504,11 +670,6 @@ def score_quadruple(
     eras = [era_hint(c_by_id[cid]) for cid in chrono]
     score += 1.2 * len(set(eras))
 
-    if sum(1 for cid in chrono if is_small_room(c_by_id[cid])) >= 1:
-        score += 6.0
-    else:
-        score -= 1.8
-
     ga = sum(1 for v in vk if v == "grand_auditorium")
     if ga >= 4:
         score -= 12.0
@@ -522,83 +683,121 @@ def score_quadruple(
         ):
             score -= 4.5
 
+    if feedback_x is not None or feedback_y is not None:
+        xy_fit = sum(
+            concert_xy_alignment(c_by_id[cid], feedback_x, feedback_y) for cid in chrono
+        )
+        score += float(os.environ.get("XY_QUARTET_WEIGHT", "4.5")) * xy_fit
+
+    score -= 14.0 * sum(1 for cid in chrono if is_kids_concert(c_by_id[cid]))
+
+    if intent and intent.must_emphasize:
+        fits = [
+            intent_fit_score(c_by_id[cid], intent.must_emphasize, intent.avoid)
+            for cid in chrono
+        ]
+        score += float(os.environ.get("CATALOG_QUARTET_WEIGHT", "10.0")) * sum(fits)
+        score -= 12.0 * (1.0 - fits[0])
+
     return score
+
+
+def _journey_combinations(
+    pool: list[str],
+    anchor: str | None,
+) -> list[tuple[str, ...]]:
+    if anchor and anchor in pool:
+        rest = [cid for cid in pool if cid != anchor]
+        if len(rest) >= 3:
+            return [tuple(sorted((anchor, *trio))) for trio in itertools.combinations(rest, 3)]
+        return []
+    return list(itertools.combinations(pool, 4))
 
 
 def choose_journey_four(
     ranked_ids_top20: list[str],
     rank_by_id: dict[str, int],
     c_by_id: dict[str, dict[str, str]],
-) -> list[str]:
+    feedback_x: float | None = None,
+    feedback_y: float | None = None,
+    intent: StructuredIntent | None = None,
+) -> list[str] | None:
     if len(ranked_ids_top20) < 4:
-        return ranked_ids_top20[:4]
+        return None
 
+    gmin = int(os.environ.get("JOURNEY_GAP_MIN_DAYS", "7"))
+    gmax = int(os.environ.get("JOURNEY_GAP_MAX_DAYS", "75"))
     profiles: list[tuple[int, int]] = [
-        (
-            int(os.environ.get("JOURNEY_GAP_MIN_DAYS", "25")),
-            int(os.environ.get("JOURNEY_GAP_MAX_DAYS", "49")),
-        ),
-        (21, 56),
-        (18, 62),
-        (14, 75),
-        (10, 100),
-        (7, 150),
+        (gmin, gmax),
+        (max(10, gmin - 4), gmax + 10),
+        (7, 100),
+        (5, 120),
     ]
 
-    for gmin, gmax in profiles:
-        best_sc = float("-inf")
-        chosen: list[str] | None = None
-        for combo in itertools.combinations(ranked_ids_top20, 4):
-            ch = chronological_four(combo, c_by_id)
-            if ch is None:
-                continue
-            dts: list[datetime] = []
-            valid = True
-            for cid in ch:
-                d = parse_concert_datetime(c_by_id[cid])
-                if d is None:
-                    valid = False
-                    break
-                dts.append(d)
-            if not valid:
-                continue
-            if not gaps_ok_ordered(dts, gmin, gmax):
-                continue
-            sc = score_quadruple(ch, rank_by_id, c_by_id)
-            if sc > best_sc:
-                best_sc = sc
-                chosen = ch
-        if chosen is not None:
-            LOG.info("Matched journey gaps %s-%s days between steps", gmin, gmax)
-            return chosen
+    combos = _journey_combinations(ranked_ids_top20, None)
+    if not combos:
+        combos = list(itertools.combinations(ranked_ids_top20, 4))
 
-    LOG.warning("No quartet satisfied gap tiers; spaced quartile fallback.")
-    dated: list[tuple[datetime, str]] = []
-    for cid in ranked_ids_top20:
-        d = parse_concert_datetime(c_by_id[cid])
-        if d:
-            dated.append((d, cid))
-    dated.sort(key=lambda x: x[0])
-    n = len(dated)
-    if n < 4:
-        return [cid for _, cid in dated]
-    picks_pos = sorted({0, max(1, n // 5), max(2, n // 2), n - 1})
-    out: list[str] = []
-    for pi in picks_pos:
-        cid = dated[pi][1]
-        if cid not in out:
-            out.append(cid)
-        if len(out) >= 4:
-            break
-    ri = 0
-    while len(out) < 4 and ri < n:
-        c_loop = dated[ri][1]
-        if c_loop not in out:
-            out.append(c_loop)
-        ri += 1
-    dm = {cid: dt for dt, cid in dated}
-    out.sort(key=lambda c_id: dm[c_id])
-    return out[:4]
+    def search() -> list[str] | None:
+        for gmin, gmax in profiles:
+            best_sc = float("-inf")
+            chosen: list[str] | None = None
+            for combo in combos:
+                ch = chronological_four(combo, c_by_id)
+                if ch is None:
+                    continue
+                dts: list[datetime] = []
+                valid = True
+                for cid in ch:
+                    d = parse_concert_datetime(c_by_id[cid])
+                    if d is None:
+                        valid = False
+                        break
+                    dts.append(d)
+                if not valid:
+                    continue
+                if not gaps_ok_ordered(dts, gmin, gmax):
+                    continue
+                if intent and (intent.must_emphasize or intent.avoid):
+                    era_err = validate_journey_contract(
+                        ch,
+                        c_by_id,
+                        intent,
+                        parse_dt=parse_concert_datetime,
+                        venue_kind_fn=venue_kind,
+                        month_key_fn=concert_month_key,
+                    )
+                    if era_err:
+                        continue
+                sc = score_quadruple(
+                    ch,
+                    rank_by_id,
+                    c_by_id,
+                    feedback_x=feedback_x,
+                    feedback_y=feedback_y,
+                    intent=intent,
+                )
+                if sc > best_sc:
+                    best_sc = sc
+                    chosen = ch
+            if chosen is not None:
+                LOG.info("Matched journey gaps %s-%s days between steps", gmin, gmax)
+                if feedback_x is not None or feedback_y is not None:
+                    LOG.info(
+                        "XY refine quartet x=%.2f y=%.2f ids=%s",
+                        feedback_x if feedback_x is not None else -1,
+                        feedback_y if feedback_y is not None else -1,
+                        chosen,
+                    )
+                return chosen
+        return None
+
+    chosen = search()
+    if chosen is not None:
+        return chosen
+
+    LOG.warning("No quartet satisfied gap tiers in heuristic search.")
+    return None
 
 
 def call_openrouter(
@@ -643,6 +842,12 @@ def call_openrouter(
         raise HTTPException(status_code=502, detail="OpenRouter request failed")
 
     data = r.json()
+    if isinstance(data, dict) and data.get("error"):
+        err = data["error"]
+        msg = err.get("message") if isinstance(err, dict) else str(err)
+        LOG.error("OpenRouter provider error: %s", msg)
+        raise HTTPException(status_code=502, detail="OpenRouter request failed")
+
     try:
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as e:
@@ -702,7 +907,8 @@ def refinement_narrative_instructions(
     if not chunks:
         return ""
     return (
-        "REFINEMENT (XY pad — reflect this only in the title and arc wording; the four concerts listed below stay fixed):\n"
+        "REFINEMENT (XY pad — the four concerts were re-selected for this position; "
+        "title and arc must match the mood below):\n"
         + "\n".join(f"- {c}" for c in chunks)
     )
 
@@ -736,6 +942,20 @@ async def lifespan(app: FastAPI):
     STATE["embeddings"] = emb
     STATE["id_to_row"] = id_to_row
     STATE["csv_path"] = str(csv_path)
+    or_key = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
+    journey_mode = os.environ.get("JOURNEY_SELECTOR", "llm").strip().lower()
+    or_model = os.environ.get(
+        "OPENROUTER_JOURNEY_MODEL",
+        os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
+    )
+    if or_key and journey_mode != "heuristic":
+        LOG.info("Journey LLM: OpenRouter (%s)", or_model)
+    elif journey_mode == "heuristic":
+        LOG.info("Journey selection: heuristic (JOURNEY_SELECTOR=heuristic)")
+    else:
+        LOG.warning(
+            "OPENROUTER_API_KEY not set — journey uses repair/heuristic only"
+        )
     LOG.info("Backend ready: %d concerts", len(concerts))
     yield
     STATE.clear()
@@ -804,13 +1024,30 @@ def agent(body: AgentBody):
     fx = body.feedback_x
     fy = body.feedback_y
 
-    embed_tail = ""
+    intent = fallback_intent(msg)
+    if llm_enabled():
+        try:
+            intent = parse_user_intent(
+                msg,
+                call_llm=call_openrouter,
+                concerts=concerts,
+                feedback_x=fx,
+                feedback_y=fy,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            LOG.warning("Structured intent failed, using raw query: %s", e)
+
+    search_text = intent.search_paragraph
+
+    embed_tail = intent.embedding_suffix() + xy_query_suffix(fx, fy)
     if fx is not None and fy is not None:
-        embed_tail = f" Refine XY: familiar_adventurous={fx:.2f}, intimate_epic={fy:.2f}."
+        embed_tail += f" Pad coordinates: familiar_adventurous={fx:.2f}, intimate_epic={fy:.2f}."
 
     q_emb = (
         model.encode(
-            prefix_query(msg + embed_tail, model_name),
+            prefix_query(search_text + embed_tail, model_name),
             convert_to_numpy=True,
             normalize_embeddings=True,
         )
@@ -818,12 +1055,23 @@ def agent(body: AgentBody):
         .reshape(-1)
     )
 
-    sims = corpus_emb @ q_emb
+    sims = (corpus_emb @ q_emb).astype(np.float32, copy=True)
+    apply_catalog_similarity_bias(sims, concerts, intent)
+    apply_xy_similarity_bias(sims, concerts, fx, fy)
 
     top_k = int(os.environ.get("TOP_CANDIDATES", "20"))
-    _, rank_by_id = semantic_ranked_pool(sims, concerts, exclude, top_k)
-    ranked_ids = sorted(rank_by_id.keys(), key=lambda cid: rank_by_id[cid])
+    top_k_max = int(os.environ.get("TOP_CANDIDATES_MAX", "50"))
     c_by_id = {c["id"]: c for c in concerts}
+
+    rank_by_id: dict[str, int] = {}
+    ranked_ids: list[str] = []
+    for limit in dict.fromkeys([top_k, top_k_max]):
+        if limit < 4:
+            continue
+        _, rank_by_id = semantic_ranked_pool(sims, concerts, exclude, limit)
+        ranked_ids = sorted(rank_by_id.keys(), key=lambda cid: rank_by_id[cid])
+        if len(ranked_ids) >= 4:
+            break
 
     if len(ranked_ids) < 4:
         raise HTTPException(
@@ -831,7 +1079,146 @@ def agent(body: AgentBody):
             detail="Not enough upcoming concerts for a journey — widen the catalogue or loosen filters.",
         )
 
-    final_four = choose_journey_four(ranked_ids, rank_by_id, c_by_id)
+    log_top = int(os.environ.get("JOURNEY_LOG_CANDIDATES_TOP", str(top_k)))
+    if log_top > 0:
+        preview_rows = []
+        for cid in ranked_ids[:log_top]:
+            c = c_by_id.get(cid)
+            if not c:
+                continue
+            preview_rows.append(
+                {
+                    "id": cid,
+                    "date": (c.get("date_iso") or "")[:10],
+                    "title": (c.get("title") or "")[:120],
+                    "tags": f"{c.get('tag1', '')} / {c.get('tag2', '')}".strip(" /"),
+                    "room": (c.get("room") or "")[:60],
+                }
+            )
+        log_llm_candidate_pool(
+            msg,
+            preview_rows,
+            semantic_rank_by_id=rank_by_id,
+            label=f"Semantic top-{log_top} (pre-LLM)",
+        )
+
+    repair_limit = int(os.environ.get("JOURNEY_REPAIR_POOL", "80"))
+    llm_pool = int(os.environ.get("JOURNEY_LLM_CANDIDATES", "40"))
+
+    def try_repair(pool_ids: list[str], pool_rank: dict[str, int]) -> list[str] | None:
+        return repair_journey_quartet(
+            pool_ids,
+            c_by_id,
+            intent,
+            pool_rank,
+            parse_dt=parse_concert_datetime,
+            venue_kind_fn=venue_kind,
+            month_key_fn=concert_month_key,
+            chronological_sort=chronological_four,
+        )
+
+    def semantic_pool(limit: int) -> tuple[list[str], dict[str, int]]:
+        _, rank = semantic_ranked_pool(sims, concerts, exclude, limit)
+        ids = prepare_journey_pool(
+            sorted(rank.keys(), key=lambda cid: rank[cid]),
+            c_by_id,
+            intent,
+        )
+        pool_rank = {cid: rank[cid] for cid in ids if cid in rank}
+        return ids, pool_rank
+
+    final_four: list[str] | None = None
+
+    if llm_enabled():
+        for pool_size in dict.fromkeys([llm_pool, top_k_max, repair_limit]):
+            pool_ids, _ = semantic_pool(pool_size)
+            if len(pool_ids) < 4:
+                continue
+            try:
+                picked = choose_journey_with_llm(
+                    msg,
+                    intent,
+                    pool_ids,
+                    c_by_id,
+                    call_llm=call_openrouter,
+                    feedback_x=fx,
+                    feedback_y=fy,
+                    chronological_sort=chronological_four,
+                    parse_dt=parse_concert_datetime,
+                    venue_kind_fn=venue_kind,
+                    month_key_fn=concert_month_key,
+                    candidate_limit=pool_size,
+                    semantic_rank_by_id=rank_by_id,
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                LOG.warning("LLM journey selection failed: %s", e)
+                picked = None
+            if picked:
+                final_four = picked
+                break
+
+    if not final_four:
+        LOG.info("LLM curator unavailable or failed; trying structural repair…")
+        curated_ids = prepare_journey_pool(ranked_ids, c_by_id, intent)
+        final_four = try_repair(curated_ids, rank_by_id)
+
+    if not final_four:
+        LOG.info("Using heuristic journey selection.")
+        final_four = choose_journey_four(
+            ranked_ids,
+            rank_by_id,
+            c_by_id,
+            feedback_x=fx,
+            feedback_y=fy,
+            intent=intent,
+        )
+
+    if not final_four:
+        expanded_ids, expanded_rank = semantic_pool(repair_limit)
+        final_four = try_repair(expanded_ids, expanded_rank)
+
+    contract_err = validate_journey_contract(
+        final_four,
+        c_by_id,
+        intent,
+        parse_dt=parse_concert_datetime,
+        venue_kind_fn=venue_kind,
+        month_key_fn=concert_month_key,
+    ) if final_four else "no quartet selected"
+    if contract_err:
+        LOG.warning("Journey contract failed (%s), repairing…", contract_err)
+        expanded_ids, expanded_rank = semantic_pool(repair_limit)
+        repaired = try_repair(expanded_ids, expanded_rank)
+        if repaired:
+            final_four = repaired
+            contract_err = None
+        else:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Could not build a valid 4-concert journey for this wish — "
+                    "try a broader mood or different dates."
+                ),
+            )
+
+    if not final_four or len(final_four) != 4:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not assemble four upcoming concerts for this journey.",
+        )
+
+    dts_final = [parse_concert_datetime(c_by_id[cid]) for cid in final_four]
+    if all(dts_final):
+        spacing_note = gap_spacing_note(dts_final)
+        if spacing_note:
+            LOG.info(spacing_note)
+    variety_note = venue_variety_note(
+        final_four, c_by_id, venue_kind, pool_ids=ranked_ids
+    )
+    if variety_note:
+        LOG.info(variety_note)
 
     narr_lines = []
     for step, cid in enumerate(final_four, start=1):
@@ -857,7 +1244,10 @@ def agent(body: AgentBody):
         + "\n\n".join(narr_lines)
     )
 
-    or_model = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    or_model = os.environ.get(
+        "OPENROUTER_JOURNEY_MODEL",
+        os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
+    )
     content = call_openrouter(
         [
             {"role": "system", "content": SYSTEM_PROMPT},

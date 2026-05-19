@@ -284,7 +284,6 @@ export default function HeroSection({
         setRevealPhase('split')
         setShowResult(true)
         setCloseAnimStep(0)
-        setIntroReplayKey((k) => k + 1)
       } catch (e) {
         setLoading(false)
         setQueryLoadStart(null)
@@ -355,17 +354,10 @@ export default function HeroSection({
 
   const exitingCollapse = closeAnimStep >= 1 && closeAnimStep <= 2
 
-  const refineDimsSphere =
-    showResult && closeAnimStep < 2 && refinePanelOpen
-
   const sphereOpacityClass =
     revealPhase === 'panel_only'
       ? 'opacity-0 pointer-events-none'
-      : refineDimsSphere
-        ? refineDrag
-          ? 'opacity-[0.7]'
-          : 'opacity-40'
-        : 'opacity-100'
+      : 'opacity-100'
 
   const sphereScaleClass = exitingCollapse
     ? 'scale-0'
@@ -375,14 +367,11 @@ export default function HeroSection({
         ? 'scale-[0.8]'
         : 'scale-100'
 
-  const transitionSphere =
-    refineDimsSphere
-      ? 'transition-[opacity,transform] duration-300 ease-out'
-      : revealPhase === 'sphere_exit'
-        ? 'transition-[opacity,transform] duration-[580ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
-        : exitingCollapse
-          ? 'transition-[opacity,transform] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
-          : 'transition-[opacity,transform] duration-[1100ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
+  const transitionSphere = revealPhase === 'sphere_exit'
+    ? 'transition-[opacity,transform] duration-[580ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
+    : exitingCollapse
+      ? 'transition-[opacity,transform] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
+      : 'transition-[opacity,transform] duration-[1100ms] ease-[cubic-bezier(0.22,1,0.36,1)]'
 
   const layoutShellClass =
     showResult && closeAnimStep >= 2

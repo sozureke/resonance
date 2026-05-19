@@ -151,13 +151,10 @@ export function validateDiscoveryQuery(raw: string): QueryGuardResult {
     if (re.test(q)) return { ok: false, reason: 'policy' }
   }
 
-  if (!hasMusicalDiscoveryIntent(q)) {
-    return { ok: false, reason: 'invalid' }
-  }
-
   if (looksLikeGibberish(q)) {
     return { ok: false, reason: 'invalid' }
   }
 
+  // Musical intent: backend LLM guard handles short mood/aesthetic phrases (neo-gothic, etc.)
   return { ok: true }
 }

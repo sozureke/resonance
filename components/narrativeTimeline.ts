@@ -1,3 +1,4 @@
+import { resolveRoomDisplay } from '@/lib/rooms'
 import { Journey, JourneyConcert } from '@/types/concert'
 
 export type NarrativeNodeState = 'hidden' | 'active' | 'done'
@@ -85,7 +86,11 @@ function fallback(value: string | undefined, next: string) {
 
 function composeStoryText(concert: JourneyConcert, index: number) {
   const title = fallback(concert.title, `Concert ${index + 1}`)
-  const room = fallback(concert.room, 'a resonant hall')
+  const room = resolveRoomDisplay({
+    room: concert.room,
+    title: concert.title,
+    subtitle: concert.subtitle,
+  })
   const genre = fallback(concert.genre, 'a luminous program')
   const bridge = fallback(concert.bridge, 'The thread keeps opening for you.')
   const dateText = formatConcertDate(concert.date_start)

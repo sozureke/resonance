@@ -6,6 +6,12 @@
     "help me find",
     "take me",
     "something for me",
+    "something for kids",
+    "for kids",
+    "for children",
+    "family concert",
+    "concert for kids",
+    "concert for children",
     "i want",
     "i'd like",
     "we want",
@@ -194,7 +200,14 @@
     "dj",
     "mc",
     "aria",
-    "gig"
+    "gig",
+    "kids",
+    "kid",
+    "children",
+    "family",
+    "kinder",
+    "enfants",
+    "kanner"
   ],
   "one_word": [
     "jazz",
